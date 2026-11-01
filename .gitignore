@@ -1,0 +1,32 @@
+﻿# Generated outputs
+/artifacts/
+/dist/
+/generated-test-*/
+/entry-test-*/
+*.exe
+*.dll
+*.pdb
+*.zip
+*.log
+# Never commit vaults, plaintext sessions, or local credentials
+*.egvault
+.access.lock
+.folderseal-session
+.env
+.env.*
+!.env.example
+*.pfx
+*.p12
+*.key
+/编辑区/
+/Sessions/
+/.sessions/
+# Local tools and editor state
+/tools/
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+Thumbs.db
+Desktop.ini
