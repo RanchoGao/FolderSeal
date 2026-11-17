@@ -33,14 +33,14 @@
 取得本仓库后，在仓库根目录打开 PowerShell：
 
 ```powershell
-.\scripts\构建_V2_2026-11-01.ps1
+.\scripts\build.ps1
 Start-Process -FilePath '.\artifacts\bin\FolderSeal.exe' -Verb RunAs
 ```
 
 如果脚本被执行策略阻止，可在本次进程内运行：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\构建_V2_2026-11-01.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build.ps1
 ```
 
 脚本使用固定源码和仓库相对路径，不下载依赖。程序、核心验证和入口验证的 EXE 位于被 Git 忽略的 `artifacts/bin/`。没有管理员权限时，程序不会执行文件夹保护操作。
@@ -115,13 +115,13 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\构建_V2_2026
 运行核心验证和图标入口验证：
 
 ```powershell
-.\scripts\构建_V2_2026-11-01.ps1 -Validate -ValidateEntry
+.\scripts\build.ps1 -Validate -ValidateEntry
 ```
 
 在**管理员 PowerShell** 中单独运行权限集成验证：
 
 ```powershell
-.\scripts\构建_V2_2026-11-01.ps1 -ValidateAcl
+.\scripts\build.ps1 -ValidateAcl
 ```
 
 测试只操作 `artifacts/test-work/` 下新生成的样例。核心验证覆盖密码边界、中文与二进制往返、篡改拒绝、归档路径、保存失败、清理恢复、并发、密码删除及硬链接拒绝；入口验证覆盖快捷方式参数、中文空格路径、隐藏目录及拒绝覆盖。
@@ -135,14 +135,14 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\构建_V2_2026
 另行准备 NSIS 3.13，将下面示例路径替换为自己的 `makensis.exe`：
 
 ```powershell
-.\scripts\打包安装程序_V2_2026-11-01.ps1 -NsisCompiler 'C:\Tools\NSIS\makensis.exe'
+.\scripts\package.ps1 -NsisCompiler 'C:\Tools\NSIS\makensis.exe'
 ```
 
 若已将 `makensis.exe` 加入 PATH，可省略参数。脚本每次先重新编译仓库源码，再生成：
 
 ```text
-dist/FolderSeal-2.1.0-Setup.exe
-dist/FolderSeal-2.1.0-Setup.exe.sha256
+artifacts/dist/FolderSeal-<版本>-Setup.exe
+artifacts/dist/SHA256SUMS.txt
 ```
 
 可用 `Get-FileHash -Algorithm SHA256` 核对安装包。构建工具和安装包不属于源码同步内容；后续可以单独作为 GitHub Release 附件发布。
@@ -170,12 +170,15 @@ src/          程序源码和管理员权限 manifest
 tests/        核心、权限及图标入口验证源码
 scripts/      相对路径构建和安装包脚本
 installer/    NSIS 安装定义
-docs/         安装版通用使用说明
+docs/         使用说明、安装说明、安全边界与历史文档
 artifacts/    本地编译、测试产物（Git 忽略）
-dist/         安装包与校验文件（Git 忽略）
+releases/     已发布安装包，按版本归档
+tools/        NSIS 3.13 便携编译器（Git 忽略）
+_archive/     旧版本源码、程序与验证记录
+_personal/    个人资料与快捷方式（Git 忽略）
 ```
 
-仓库文件的 V1、V2 表示本次开源整理的文件版本，产品版本仍为 2.1.0。源码保持单文件实现，未迁移 .NET 平台。第三方 NSIS 工具另行安装，遵守其自身许可证。
+文件名不带版本号，版本只由 git tag 和 `releases/<版本>/` 表示，历史变更见 [CHANGELOG.md](CHANGELOG.md)。源码保持单文件实现，未迁移 .NET 平台。第三方 NSIS 工具遵守其自身许可证。
 
 ## 许可证
 

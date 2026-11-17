@@ -21,8 +21,15 @@
 /编辑区/
 /Sessions/
 /.sessions/
-# Local tools and editor state
+# Local tools, archives and personal files
 /tools/
+/releases/
+/_archive/
+/_personal/
+*.lnk
+/setup-test-*/
+.setup-test-*/
+/installer-test.json
 .vs/
 .vscode/
 .idea/

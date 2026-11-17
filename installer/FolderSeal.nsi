@@ -19,12 +19,12 @@ SetCompressor /SOLID lzma
 !define PRODUCT_MARKER "EurekaGao.FolderSeal.v1"
 
 Name "${PRODUCT}"
-OutFile "${PROJECT_ROOT}\dist\FolderSeal-2.1.0-Setup.exe"
+OutFile "${PROJECT_ROOT}\artifacts\dist\FolderSeal-${VERSION}-Setup.exe"
 InstallDir "$PROGRAMFILES\EurekaGao\FolderSeal"
 ShowInstDetails show
 ShowUninstDetails show
 BrandingText "EurekaGao"
-VIProductVersion "2.1.0.0"
+VIProductVersion "${VERSION}.0"
 VIAddVersionKey /LANG=2052 "ProductName" "${PRODUCT}"
 VIAddVersionKey /LANG=2052 "CompanyName" "EurekaGao"
 VIAddVersionKey /LANG=2052 "FileDescription" "文件夹加密工具安装程序"
@@ -115,7 +115,7 @@ Section "程序和开始菜单入口（必选）" MainSection
   SetOverwrite on
   ClearErrors
   File /oname=FolderSeal.exe "${PROJECT_ROOT}\artifacts\bin\FolderSeal.exe"
-  File /oname=使用说明.txt "${PROJECT_ROOT}\docs\使用说明_V1_2026-11-01.txt"
+  File /oname=使用说明.txt "${PROJECT_ROOT}\docs\安装版使用说明.txt"
   IfErrors install_failed
   FileOpen $0 "$INSTDIR\.folderseal-product" w
   FileWrite $0 "${PRODUCT_MARKER}"
