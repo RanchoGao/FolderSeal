@@ -170,7 +170,8 @@ src/          程序源码和管理员权限 manifest
 tests/        核心、权限及图标入口验证源码
 scripts/      相对路径构建和安装包脚本
 installer/    NSIS 安装定义
-docs/         使用说明、安装说明、安全边界与历史文档
+docs/         使用说明、安装说明、安全边界
+docs/历史/    过期文档
 artifacts/    本地编译、测试产物（Git 忽略）
 releases/     已发布安装包，按版本归档
 tools/        NSIS 3.13 便携编译器（Git 忽略）

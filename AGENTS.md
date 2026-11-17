@@ -10,7 +10,8 @@ FolderSeal（文件夹加密工具）：C# + Windows Forms + .NET Framework 4.7.
 - `tests/` 放验证源码，测试只使用生成的样例，禁止指向个人文件。
 - `scripts/` 放构建、打包、安装包验证脚本，一律用仓库相对路径。
 - `installer/` 放 NSIS 定义；版本号只在 `!define VERSION` 一处维护。
-- `docs/` 放中文文档；过期文档移入 `docs/历史/`。
+- `docs/` 只放对外中文文档；过期文档移入 `docs/历史/`。
+- `_personal/需求/` 放路线图、需求池、决策记录，不入库、不公开。
 - `artifacts/`、`tools/`、`releases/`、`_archive/`、`_personal/` 均不入库。
 
 ## 硬性规则
@@ -20,6 +21,17 @@ FolderSeal（文件夹加密工具）：C# + Windows Forms + .NET Framework 4.7.
 3. 构建产物一律进 `artifacts/`，源码目录不出现 exe。
 4. 测试、文档、脚本里不出现个人路径、真实姓名和个人资料文件。
 5. 对外署名统一 EurekaGao。
+6. 新需求先写进 `_personal/需求/需求池.md` 拿编号，再动代码；不新建第二份需求清单。
+7. 未成型的想法、成本判断、商业打算一律不进仓库，仓库只放能公开的成品。
+
+## 需求流程
+
+1. 想法写进 `_personal/需求/需求池.md`，编号 `R-序号`，递增不复用。
+2. 要做的需求移到 `_personal/需求/路线图.md` 的对应版本，需求池状态改为“已确认/进行中”。
+3. 提交信息引用编号，如 `feat: 批量导入（R-003）`。
+4. 发版时在 `CHANGELOG.md` 标注编号。
+5. 跨版本、涉及取舍的技术决策，记在 `_personal/需求/决策记录/`。
+6. GitHub Issue 只做讨论和缺陷记录，不作为需求清单。
 
 ## 常用命令
 
