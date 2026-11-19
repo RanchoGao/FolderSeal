@@ -16,12 +16,26 @@ $taskTestParent = Join-Path $taskRoot 'artifacts\test-work'
 New-Item -ItemType Directory -Path $taskOutput, $taskTestParent -Force | Out-Null
 $taskSource = Join-Path $taskRoot 'src\FolderSeal.cs'
 $taskManifest = Join-Path $taskRoot 'src\FolderSeal.manifest'
+$taskVersion = [regex]::Match([IO.File]::ReadAllText((Join-Path $taskRoot 'installer\FolderSeal.nsi')), '!define VERSION "([^\"]+)"').Groups[1].Value
+if (-not $taskVersion) { throw 'Missing VERSION in installer definition.' }
+$taskVersionSource = Join-Path $taskOutput 'VersionInfo.cs'
+$taskVersionText = @"
+using System.Reflection;
+[assembly: AssemblyVersion("$taskVersion.0")]
+[assembly: AssemblyFileVersion("$taskVersion.0")]
+[assembly: AssemblyProduct("FolderSeal")]
+[assembly: AssemblyCompany("EurekaGao")]
+[assembly: AssemblyCopyright("Copyright (c) EurekaGao")]
+"@
+[IO.File]::WriteAllText($taskVersionSource, $taskVersionText, [Text.UTF8Encoding]::new($true))
+$taskIcon = Join-Path $taskRoot 'assets\FolderSeal.ico'
+$taskBranding = @("/win32icon:$taskIcon", "/resource:$taskIcon,FolderSeal.AppIcon", $taskVersionSource)
 $taskReferences = @('/r:System.dll','/r:System.Core.dll','/r:System.Drawing.dll','/r:System.Windows.Forms.dll','/r:System.Security.dll','/r:System.IO.Compression.dll','/r:System.IO.Compression.FileSystem.dll')
-& $taskCompiler /nologo /optimize+ /target:winexe /platform:anycpu "/win32manifest:$taskManifest" "/out:$taskOutput\FolderSeal.exe" @taskReferences $taskSource
+& $taskCompiler /nologo /optimize+ /target:winexe /platform:anycpu "/win32manifest:$taskManifest" "/out:$taskOutput\FolderSeal.exe" @taskReferences @taskBranding $taskSource
 if ($LASTEXITCODE -ne 0) { throw '程序编译失败。' }
-& $taskCompiler /nologo /optimize+ /target:exe /main:FolderSeal.Tests "/out:$taskOutput\FolderSeal.Tests.exe" @taskReferences $taskSource (Join-Path $taskRoot 'tests\CoreTests.cs')
+& $taskCompiler /nologo /optimize+ /target:exe /main:FolderSeal.Tests "/out:$taskOutput\FolderSeal.Tests.exe" @taskReferences @taskBranding $taskSource (Join-Path $taskRoot 'tests\CoreTests.cs')
 if ($LASTEXITCODE -ne 0) { throw '核心验证程序编译失败。' }
-& $taskCompiler /nologo /optimize+ /target:exe /main:EntryTests "/out:$taskOutput\FolderSeal.EntryTests.exe" @taskReferences $taskSource (Join-Path $taskRoot 'tests\EntryTests.cs')
+& $taskCompiler /nologo /optimize+ /target:exe /main:EntryTests "/out:$taskOutput\FolderSeal.EntryTests.exe" @taskReferences @taskBranding $taskSource (Join-Path $taskRoot 'tests\EntryTests.cs')
 if ($LASTEXITCODE -ne 0) { throw '入口验证程序编译失败。' }
 if ($Validate) {
     & "$taskOutput\FolderSeal.Tests.exe" $taskTestParent
@@ -32,7 +46,7 @@ if ($ValidateEntry) {
     if ($LASTEXITCODE -ne 0) { throw '入口验证失败；生成的样例保留在 artifacts/test-work 中。' }
 }
 if ($ValidateUi) {
-    & $taskCompiler /nologo /optimize+ /target:exe /main:UiTests "/out:$taskOutput\FolderSeal.UiTests.exe" @taskReferences $taskSource (Join-Path $taskRoot 'tests\UiTests.cs')
+    & $taskCompiler /nologo /optimize+ /target:exe /main:UiTests "/out:$taskOutput\FolderSeal.UiTests.exe" @taskReferences @taskBranding $taskSource (Join-Path $taskRoot 'tests\UiTests.cs')
     if ($LASTEXITCODE -ne 0) { throw '界面验证程序编译失败。' }
     & "$taskOutput\FolderSeal.UiTests.exe" $taskTestParent
     if ($LASTEXITCODE -ne 0) { throw '界面验证失败；生成的样例保留在 artifacts/test-work 中。' }

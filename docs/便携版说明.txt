@@ -1,4 +1,6 @@
-FolderSeal 文件夹加密工具 · 便携版
+﻿FolderSeal 文件夹加密工具 · 便携版
+
+FolderSeal — 你的文件，只有你能打开。
 作者：EurekaGao
 
 一、运行

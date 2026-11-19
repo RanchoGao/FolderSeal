@@ -1,6 +1,8 @@
-# 文件夹加密工具 · FolderSeal
+﻿# 文件夹加密工具 · FolderSeal
 
-在本机 NTFS 磁盘中创建独立的加密文件夹，使用密码解锁、编辑并保存，通过 Windows 文件权限限制常规删除。作者：**EurekaGao**。当前预发布版本：**2.2.0**。
+FolderSeal — 你的文件，只有你能打开。
+
+在本机 NTFS 磁盘中创建独立的加密文件夹，使用密码解锁、编辑并保存，通过 Windows 文件权限限制常规删除。作者：**EurekaGao**。当前本地迭代版本：**2.2.1**。
 
 程序使用 C#、Windows Forms 和 .NET Framework，在本机处理文件。没有联网找回密码功能。当前为自用工具开源版，**尚未经过独立安全审计**。请先用副本验证，并保留独立备份。
 
@@ -178,6 +180,7 @@ artifacts/dist/SHA256SUMS.txt
 ## 仓库结构
 
 ```text
+assets/       品牌原图与多尺寸 Windows 图标
 src/          程序源码和管理员权限 manifest
 tests/        核心、权限、图标入口及界面验证源码
 scripts/      相对路径构建和安装包脚本

@@ -850,6 +850,8 @@ namespace FolderSeal
         {
             pendingSource = source;
             Text = "FolderSeal · 文件夹加密工具 · EurekaGao";
+            using (Stream iconStream = typeof(MainForm).Assembly.GetManifestResourceStream("FolderSeal.AppIcon"))
+                Icon = new Icon(iconStream);
             Font = new Font("Microsoft YaHei UI", 10); AutoScaleMode = AutoScaleMode.Dpi; AutoScaleDimensions = new SizeF(96, 96);
             ClientSize = new Size(1160, 820); MinimumSize = new Size(1080, 800); StartPosition = FormStartPosition.CenterScreen;
             BackColor = Color.White; ForeColor = Ink; KeyPreview = true;
@@ -860,7 +862,7 @@ namespace FolderSeal
             foreach (int h in new[] { 43, 49, 48, 58, 58, 96 }) sidebar.RowStyles.Add(new RowStyle(SizeType.Absolute, h));
             sidebar.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); sidebar.RowStyles.Add(new RowStyle(SizeType.Absolute, 74));
             sidebar.Controls.Add(new Label { Text = "FolderSeal", Dock = DockStyle.Fill, Font = new Font(Font.FontFamily, 20, FontStyle.Bold), ForeColor = Green }, 0, 0);
-            sidebar.Controls.Add(new Label { Text = "你的文件，安心保管。", Dock = DockStyle.Fill, ForeColor = Muted }, 0, 1);
+            sidebar.Controls.Add(new Label { Text = "你的文件，\r\n只有你能打开。", Dock = DockStyle.Fill, ForeColor = Muted }, 0, 1);
             sidebar.Controls.Add(new Label { Text = "▣  加密文件夹", Dock = DockStyle.Fill, BackColor = Color.FromArgb(229, 237, 223), ForeColor = Green, Padding = new Padding(10, 12, 0, 0) }, 0, 2);
             create = Add("＋ 创建加密文件夹", CreateVault); choose = Add("选择已有文件夹", ChooseVault);
             create.Dock = choose.Dock = DockStyle.Fill; create.Margin = choose.Margin = new Padding(0, 11, 0, 3);
@@ -876,7 +878,7 @@ namespace FolderSeal
             heading.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); heading.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 112));
             heading.RowStyles.Add(new RowStyle(SizeType.Absolute, 40)); heading.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             heading.Controls.Add(new Label { Text = "加密文件夹", Dock = DockStyle.Fill, Font = new Font(Font.FontFamily, 19, FontStyle.Bold) }, 0, 0);
-            heading.Controls.Add(new Label { Text = "解锁后照常编辑，用完请保存并锁定。", Dock = DockStyle.Fill, ForeColor = Muted }, 0, 1);
+            heading.Controls.Add(new Label { Text = "你的文件，只有你能打开。", Dock = DockStyle.Fill, ForeColor = Muted }, 0, 1);
             Button help = Add("使用帮助 ↗", ShowHelp); heading.Controls.Add(help, 1, 0);
             body.Controls.Add(heading, 0, 0);
             TableLayoutPanel card = new TableLayoutPanel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(244, 248, 238), Padding = new Padding(17, 12, 16, 11), ColumnCount = 2, RowCount = 2 };
