@@ -2,7 +2,7 @@
 
 FolderSeal — 你的文件，只有你能打开。
 
-在本机 NTFS 磁盘中创建独立的加密文件夹，使用密码解锁、编辑并保存，通过 Windows 文件权限限制常规删除。作者：**EurekaGao**。当前本地迭代版本：**2.2.2**。
+在本机 NTFS 磁盘中创建独立的加密文件夹，使用密码解锁、编辑并保存，通过 Windows 文件权限限制常规删除。作者：**EurekaGao**。当前本地迭代版本：**2.2.3**。
 
 程序使用 C#、Windows Forms 和 .NET Framework，在本机处理文件。没有联网找回密码功能。当前为自用工具开源版，**尚未经过独立安全审计**。请先用副本验证，并保留独立备份。
 
@@ -119,7 +119,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build.ps1
 运行核心、图标入口和界面验证：
 
 ```powershell
-.\scripts\build.ps1 -Validate -ValidateEntry -ValidateUi
+.\scripts\build.ps1 -Validate -ValidateEntry -ValidateUi -ValidateIcon
 ```
 
 在**管理员 PowerShell** 中单独运行权限集成验证：
@@ -133,6 +133,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build.ps1
 权限验证会在测试目录内设置 NTFS 权限，检查普通用户删除和覆盖是否受阻。成功后清理样例；失败时保留样例供排查。测试源码中的固定密码只用于生成的样例，不是用户密码。
 
 界面验证覆盖未选择、解锁、锁定、忙碌、失败、待清理、最小窗口布局与锁定后的文件名隐藏。
+
+图标验证覆盖七种尺寸的 Windows 原生解码、真实位深、透明圆角、Alpha 与 AND 掩码一致性、渐变色及 EXE 图标，并输出深色、浅色和彩色背景预览供查看。
 
 测试通过不等同于独立安全审计。实际通过数量以本次运行输出为准。当前待发布版本的验证范围见 [CHANGELOG.md](CHANGELOG.md)。
 

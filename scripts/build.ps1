@@ -1,6 +1,6 @@
 ﻿# Copyright (c) 2026 EurekaGao. MIT License.
 [CmdletBinding()]
-param([switch]$Validate, [switch]$ValidateEntry, [switch]$ValidateAcl, [switch]$ValidateUi)
+param([switch]$Validate, [switch]$ValidateEntry, [switch]$ValidateAcl, [switch]$ValidateUi, [switch]$ValidateIcon)
 $ErrorActionPreference = 'Stop'
 $taskRoot = Split-Path -Parent $PSScriptRoot
 $taskCompiler = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
@@ -50,6 +50,12 @@ if ($ValidateUi) {
     if ($LASTEXITCODE -ne 0) { throw '界面验证程序编译失败。' }
     & "$taskOutput\FolderSeal.UiTests.exe" $taskTestParent
     if ($LASTEXITCODE -ne 0) { throw '界面验证失败；生成的样例保留在 artifacts/test-work 中。' }
+}
+if ($ValidateIcon) {
+    & $taskCompiler /nologo /optimize+ /target:exe "/out:$taskOutput\FolderSeal.IconTests.exe" /r:System.Drawing.dll /r:System.Core.dll (Join-Path $taskRoot 'tests\IconTests.cs')
+    if ($LASTEXITCODE -ne 0) { throw 'Icon verification compile failed.' }
+    & "$taskOutput\FolderSeal.IconTests.exe" $taskIcon "$taskOutput\FolderSeal.exe" (Join-Path $taskTestParent 'icon-preview')
+    if ($LASTEXITCODE -ne 0) { throw 'Icon verification failed.' }
 }
 if ($ValidateAcl) {
     & "$taskOutput\FolderSeal.Tests.exe" $taskTestParent --acl
