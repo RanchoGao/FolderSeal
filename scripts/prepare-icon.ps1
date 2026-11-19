@@ -4,35 +4,33 @@ param()
 $ErrorActionPreference = 'Stop'
 $taskRoot = Split-Path -Parent $PSScriptRoot
 Add-Type -AssemblyName System.Drawing
-Add-Type @'
-using System;
-using System.Runtime.InteropServices;
-public static class FolderSealIconNative {
-    [DllImport("user32.dll")] public static extern bool DestroyIcon(IntPtr icon);
-}
-'@
 $taskSource = [Drawing.Image]::FromFile((Join-Path $taskRoot 'assets\FolderSeal.png'))
 $taskFrames = @()
 try {
     foreach ($taskSize in @(16, 24, 32, 48, 64, 128, 256)) {
-        $taskBitmap = [Drawing.Bitmap]::new($taskSize, $taskSize)
+        $taskBitmap = [Drawing.Bitmap]::new($taskSize, $taskSize, [Drawing.Imaging.PixelFormat]::Format32bppArgb)
         $taskGraphics = [Drawing.Graphics]::FromImage($taskBitmap)
         $taskMemory = [IO.MemoryStream]::new()
-        $taskHandle = [IntPtr]::Zero
-        $taskIcon = $null
         try {
             $taskGraphics.InterpolationMode = [Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
             $taskGraphics.DrawImage($taskSource, 0, 0, $taskSize, $taskSize)
-            $taskHandle = $taskBitmap.GetHicon()
-            $taskIcon = [Drawing.Icon]::FromHandle($taskHandle)
-            $taskIcon.Save($taskMemory)
+            # Icon.FromHandle().Save() can quantize to a 4-bit palette. Write the
+            # 32-bit DIB directly, including the separate Windows AND mask.
+            $taskBitmap.Save($taskMemory, [Drawing.Imaging.ImageFormat]::Bmp)
             $taskBytes = $taskMemory.ToArray()
-            $taskOffset = [BitConverter]::ToUInt32($taskBytes, 18)
-            $taskLength = [BitConverter]::ToUInt32($taskBytes, 14)
-            $taskFrames += ,@{ Size = $taskSize; Bytes = $taskBytes[$taskOffset..($taskOffset + $taskLength - 1)] }
+            if ([BitConverter]::ToUInt32($taskBytes, 14) -ne 40 -or
+                [BitConverter]::ToUInt16($taskBytes, 28) -ne 32 -or
+                [BitConverter]::ToUInt32($taskBytes, 30) -ne 0) { throw 'Expected an uncompressed 32-bit bitmap.' }
+            $taskOffset = [BitConverter]::ToUInt32($taskBytes, 10)
+            $taskPixelLength = $taskSize * $taskSize * 4
+            $taskMaskLength = [int]([Math]::Ceiling($taskSize / 32.0) * 4 * $taskSize)
+            $taskDib = [byte[]]::new(40 + $taskPixelLength + $taskMaskLength)
+            [Array]::Copy($taskBytes, 14, $taskDib, 0, 40)
+            [Array]::Copy([BitConverter]::GetBytes([int]($taskSize * 2)), 0, $taskDib, 8, 4)
+            [Array]::Copy([BitConverter]::GetBytes([int]($taskPixelLength + $taskMaskLength)), 0, $taskDib, 20, 4)
+            [Array]::Copy($taskBytes, $taskOffset, $taskDib, 40, $taskPixelLength)
+            $taskFrames += ,@{ Size = $taskSize; Bytes = $taskDib }
         } finally {
-            if ($taskIcon) { $taskIcon.Dispose() }
-            if ($taskHandle -ne [IntPtr]::Zero) { [FolderSealIconNative]::DestroyIcon($taskHandle) | Out-Null }
             $taskMemory.Dispose(); $taskGraphics.Dispose(); $taskBitmap.Dispose()
         }
     }

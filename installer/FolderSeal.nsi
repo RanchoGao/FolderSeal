@@ -14,7 +14,7 @@ SetCompressor /SOLID lzma
 !endif
 !define PRODUCT "文件夹加密工具"
 !define PRODUCT_ID "EurekaGao.FolderSeal"
-!define VERSION "2.2.1"
+!define VERSION "2.2.2"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_ID}"
 !define PRODUCT_MARKER "EurekaGao.FolderSeal.v1"
 
