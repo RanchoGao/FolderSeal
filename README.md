@@ -1,6 +1,6 @@
 # 文件夹加密工具 · FolderSeal
 
-在本机 NTFS 磁盘中创建独立的加密文件夹，使用密码解锁、编辑并保存，通过 Windows 文件权限限制常规删除。作者：**EurekaGao**。当前整理基线：**2.1.0**。
+在本机 NTFS 磁盘中创建独立的加密文件夹，使用密码解锁、编辑并保存，通过 Windows 文件权限限制常规删除。作者：**EurekaGao**。当前预发布版本：**2.2.0**。
 
 程序使用 C#、Windows Forms 和 .NET Framework，在本机处理文件。没有联网找回密码功能。当前为自用工具开源版，**尚未经过独立安全审计**。请先用副本验证，并保留独立备份。
 
@@ -30,6 +30,8 @@
 
 ## 从源码开始
 
+本地便携包可通过 `scripts/package-portable.ps1` 生成。使用时先解压整个压缩包到稳定位置，再运行 `FolderSeal.exe`，仍需管理员授权。包内提供中文说明和安全边界；源文件与样例验证程序不包含在便携包中。
+
 取得本仓库后，在仓库根目录打开 PowerShell：
 
 ```powershell
@@ -53,13 +55,13 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build.ps1
 2. **导入**：使用“导入文件”“导入文件夹”，或打开编辑区后放入资料。普通导入保留原文件。
 3. **编辑**：选择已有加密文件夹，输入密码解锁，点击“打开编辑区”，用自己的软件编辑。
 4. **锁定**：关闭占用文件的编辑器，点击“保存并锁定”。看到“已锁定”才表示保存与明文清理均完成。
-5. **删除**：先锁定，再点击“验证密码并删除”，确认并再次输入密码。此操作永久删除，不进入回收站。
+5. **删除**：先锁定，再点击“删除…”，确认并再次输入密码。此操作永久删除，不进入回收站。
 
 关闭资源管理器窗口不会自动锁定。正常退出时，程序会要求先保存并锁定；保存失败时保留工作区并阻止正常退出。
 
 ## 文件夹图标入口
 
-选择已有加密文件夹，在锁定状态点击“创建文件夹图标入口”。原位置生成同名文件夹图标快捷方式，密文目录隐藏。双击入口，输入密码后自动打开编辑区。
+选择已有加密文件夹，在锁定状态点击“创建图标入口”。原位置生成同名文件夹图标快捷方式，密文目录隐藏。双击入口，输入密码后自动打开编辑区。
 
 - 快捷方式不是数据本体，删除快捷方式不会删除密文。
 - **备份必须包含隐藏的密文目录**，只备份快捷方式无法恢复资料。
@@ -112,10 +114,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build.ps1
 
 ## 构建与验证
 
-运行核心验证和图标入口验证：
+运行核心、图标入口和界面验证：
 
 ```powershell
-.\scripts\build.ps1 -Validate -ValidateEntry
+.\scripts\build.ps1 -Validate -ValidateEntry -ValidateUi
 ```
 
 在**管理员 PowerShell** 中单独运行权限集成验证：
@@ -128,7 +130,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build.ps1
 
 权限验证会在测试目录内设置 NTFS 权限，检查普通用户删除和覆盖是否受阻。成功后清理样例；失败时保留样例供排查。测试源码中的固定密码只用于生成的样例，不是用户密码。
 
-测试通过不等同于独立安全审计。实际通过数量以本次运行输出为准。
+界面验证覆盖未选择、解锁、锁定、忙碌、失败、待清理、最小窗口布局与锁定后的文件名隐藏。
+
+测试通过不等同于独立安全审计。实际通过数量以本次运行输出为准。当前待发布版本的验证范围见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 生成安装包
 
@@ -146,6 +150,14 @@ artifacts/dist/SHA256SUMS.txt
 ```
 
 可用 `Get-FileHash -Algorithm SHA256` 核对安装包。构建工具和安装包不属于源码同步内容；后续可以单独作为 GitHub Release 附件发布。
+
+生成带中文说明和许可证的便携包：
+
+```powershell
+.\scripts\package-portable.ps1
+```
+
+输出为 `artifacts/dist/FolderSeal-<版本>-Portable.zip` 和 `PORTABLE-SHA256SUMS.txt`。源码提交、版本标签和 Release 附件的完整流程见[发布流程](docs/发布流程.md)。
 
 安装包仅包含通用程序、使用说明及卸载程序，不附带私人资料或个人启动参数。程序未使用商业代码签名证书，Windows 可能显示“未知发布者”。
 
@@ -167,16 +179,17 @@ artifacts/dist/SHA256SUMS.txt
 
 ```text
 src/          程序源码和管理员权限 manifest
-tests/        核心、权限及图标入口验证源码
+tests/        核心、权限、图标入口及界面验证源码
 scripts/      相对路径构建和安装包脚本
 installer/    NSIS 安装定义
 docs/         使用说明、安装说明、安全边界
 docs/历史/    过期文档
 artifacts/    本地编译、测试产物（Git 忽略）
-releases/     已发布安装包，按版本归档
+releases/     本地待发布及已发布附件，按版本归档（Git 忽略）
 tools/        NSIS 3.13 便携编译器（Git 忽略）
 _archive/     旧版本源码、程序与验证记录
 _personal/    个人资料与快捷方式（Git 忽略）
+软件理解复述/  会话交付物与原型快照（Git 忽略）
 ```
 
 文件名不带版本号，版本只由 git tag 和 `releases/<版本>/` 表示，历史变更见 [CHANGELOG.md](CHANGELOG.md)。源码保持单文件实现，未迁移 .NET 平台。第三方 NSIS 工具遵守其自身许可证。

@@ -1,4 +1,4 @@
-﻿// Copyright (c) EurekaGao. Local-only Windows folder encryption tool.
+// Copyright (c) EurekaGao. Local-only Windows folder encryption tool.
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -823,52 +823,129 @@ namespace FolderSeal
 
     internal sealed class MainForm : Form
     {
-        private readonly TextBox selected = new TextBox { ReadOnly = true, Dock = DockStyle.Fill };
-        private readonly Label status = new Label { AutoSize = true, ForeColor = Color.FromArgb(30, 80, 90) };
-        private readonly Label hint = new Label { AutoSize = true, MaximumSize = new Size(880, 0), ForeColor = Color.DimGray };
-        private readonly ListView files = new ListView { Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true, GridLines = false };
-        private readonly FlowLayoutPanel actions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = false, WrapContents = true };
+        private static readonly Color Green = Color.FromArgb(36, 91, 70), Ink = Color.FromArgb(38, 60, 50), Muted = Color.FromArgb(82, 103, 87), Line = Color.FromArgb(218, 229, 213);
+        private readonly TextBox selected = new TextBox { ReadOnly = true, Dock = DockStyle.Fill, BorderStyle = BorderStyle.None, BackColor = Color.FromArgb(244, 248, 238), ForeColor = Muted, TabStop = true };
+        private readonly Label status = new Label { Dock = DockStyle.Fill, ForeColor = Muted, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
+        private readonly Label hint = new Label { Dock = DockStyle.Fill, ForeColor = Color.FromArgb(121, 80, 25), Padding = new Padding(0, 5, 0, 0) };
+        private readonly ListView files = new ListView { Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true, GridLines = false, BorderStyle = BorderStyle.None, HideSelection = false, BackColor = Color.White };
+        private readonly FlowLayoutPanel actions = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(0, 6, 0, 0) };
+        private readonly Label vaultName = new Label { Dock = DockStyle.Fill, Font = new Font("Microsoft YaHei UI", 14, FontStyle.Bold), ForeColor = Ink, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft };
+        private readonly Label badge = new Label { AutoSize = true, Padding = new Padding(9, 5, 9, 5), Margin = new Padding(0, 7, 0, 0), ForeColor = Green, BackColor = Color.FromArgb(230, 240, 222) };
+        private readonly Label noticeTitle = new Label { Dock = DockStyle.Fill, Font = new Font("Microsoft YaHei UI", 10, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft };
+        private readonly Panel notice = new Panel { Dock = DockStyle.Fill, Padding = new Padding(15, 9, 15, 8), Margin = new Padding(0, 12, 0, 10) };
+        private readonly Label empty = new Label { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, ForeColor = Muted, Padding = new Padding(24), BackColor = Color.FromArgb(250, 252, 247) };
+        private readonly Label count = new Label { AutoSize = true, ForeColor = Muted, Margin = new Padding(12, 15, 0, 0) };
+        private readonly Label caption = new Label { Dock = DockStyle.Fill, ForeColor = Muted, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
+        private readonly Label availability = new Label { Dock = DockStyle.Fill, ForeColor = Muted, AutoEllipsis = true };
+        private readonly Label switchReason = new Label { Dock = DockStyle.Fill, ForeColor = Muted };
+        private readonly ProgressBar progress = new ProgressBar { Dock = DockStyle.Bottom, Height = 3, Style = ProgressBarStyle.Marquee, MarqueeAnimationSpeed = 35, Visible = false };
+        private readonly ToolTip tips = new ToolTip { AutoPopDelay = 15000 };
         private readonly string sessionsBase = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "EurekaGao", "FolderSeal", "Sessions");
         private readonly string pendingSource;
         private VaultSession session;
-        private bool busy, closing;
-        private Button create, choose, unlock, show, importFiles, importFolder, lockButton, delete, recover, entryButton;
+        private bool busy, closing, operationFailed;
+        private string lastFailure;
+        private Button create, choose, unlock, show, importFiles, importFolder, lockButton, delete, recover, entryButton, primaryCreate;
         public MainForm(string source, string openRoot)
         {
             pendingSource = source;
-            Text = "文件夹加密工具 · EurekaGao"; Width = 1020; Height = 700; MinimumSize = new Size(900, 620);
-            Font = new Font("Microsoft YaHei UI", 10); AutoScaleMode = AutoScaleMode.Dpi; StartPosition = FormStartPosition.CenterScreen;
-            BackColor = Color.FromArgb(247, 249, 250);
-            TableLayoutPanel layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(26), ColumnCount = 1, RowCount = 7 };
-            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 45));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 47));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 132));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
-            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 68));
-            layout.Controls.Add(new Label { Text = "你的文件夹，各自加密", Font = new Font(Font.FontFamily, 19, FontStyle.Bold), AutoSize = true });
-            layout.Controls.Add(new Label { Text = "任意位置创建 · 密码由你设置 · 锁定后保存密文并防止常规删除", AutoSize = true, ForeColor = Color.DimGray });
-            layout.Controls.Add(selected);
-            create = Add("创建加密文件夹", CreateVault); choose = Add("选择已有文件夹", ChooseVault);
-            unlock = Add("输入密码解锁", UnlockVault); lockButton = Add("保存并锁定", LockVault);
-            show = Add("打开编辑区", ShowWorkspace); importFiles = Add("导入文件", ImportFiles);
-            importFolder = Add("导入文件夹", ImportFolder); recover = Add("恢复未锁定工作区", Recover);
-            entryButton = Add("创建文件夹图标入口", CreateEntry);
-            delete = Add("验证密码并删除", DeleteVault); delete.ForeColor = Color.Firebrick;
-            layout.Controls.Add(actions); layout.Controls.Add(status);
-            files.Columns.Add("文件（仅解锁后显示）", 540); files.Columns.Add("大小", 110); files.Columns.Add("修改时间", 170);
-            layout.Controls.Add(files); layout.Controls.Add(hint); Controls.Add(layout);
+            Text = "FolderSeal · 文件夹加密工具 · EurekaGao";
+            Font = new Font("Microsoft YaHei UI", 10); AutoScaleMode = AutoScaleMode.Dpi; AutoScaleDimensions = new SizeF(96, 96);
+            ClientSize = new Size(1160, 820); MinimumSize = new Size(1080, 800); StartPosition = FormStartPosition.CenterScreen;
+            BackColor = Color.White; ForeColor = Ink; KeyPreview = true;
+            TableLayoutPanel shell = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty };
+            shell.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 212)); shell.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            shell.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            TableLayoutPanel sidebar = new TableLayoutPanel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(247, 249, 244), Padding = new Padding(18, 27, 18, 18), ColumnCount = 1, RowCount = 8 };
+            foreach (int h in new[] { 43, 49, 48, 58, 58, 96 }) sidebar.RowStyles.Add(new RowStyle(SizeType.Absolute, h));
+            sidebar.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); sidebar.RowStyles.Add(new RowStyle(SizeType.Absolute, 74));
+            sidebar.Controls.Add(new Label { Text = "FolderSeal", Dock = DockStyle.Fill, Font = new Font(Font.FontFamily, 20, FontStyle.Bold), ForeColor = Green }, 0, 0);
+            sidebar.Controls.Add(new Label { Text = "你的文件，安心保管。", Dock = DockStyle.Fill, ForeColor = Muted }, 0, 1);
+            sidebar.Controls.Add(new Label { Text = "▣  加密文件夹", Dock = DockStyle.Fill, BackColor = Color.FromArgb(229, 237, 223), ForeColor = Green, Padding = new Padding(10, 12, 0, 0) }, 0, 2);
+            create = Add("＋ 创建加密文件夹", CreateVault); choose = Add("选择已有文件夹", ChooseVault);
+            create.Dock = choose.Dock = DockStyle.Fill; create.Margin = choose.Margin = new Padding(0, 11, 0, 3);
+            sidebar.Controls.Add(create, 0, 3); sidebar.Controls.Add(choose, 0, 4);
+            switchReason.Padding = new Padding(2, 12, 0, 0); sidebar.Controls.Add(switchReason, 0, 5);
+            sidebar.Controls.Add(new Label { Text = "● 仅在本机处理\r\n无需账号，不上传文件。\r\n每个文件夹独立设置密码。", Dock = DockStyle.Fill, ForeColor = Muted }, 0, 7);
+            TableLayoutPanel body = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(27, 24, 27, 12), ColumnCount = 1, RowCount = 10 };
+            body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            foreach (int h in new[] { 73, 108, 120, 55 }) body.RowStyles.Add(new RowStyle(SizeType.Absolute, h));
+            body.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            foreach (int h in new[] { 36, 50, 39, 47, 31 }) body.RowStyles.Add(new RowStyle(SizeType.Absolute, h));
+            TableLayoutPanel heading = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2 };
+            heading.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); heading.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 112));
+            heading.RowStyles.Add(new RowStyle(SizeType.Absolute, 40)); heading.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            heading.Controls.Add(new Label { Text = "加密文件夹", Dock = DockStyle.Fill, Font = new Font(Font.FontFamily, 19, FontStyle.Bold) }, 0, 0);
+            heading.Controls.Add(new Label { Text = "解锁后照常编辑，用完请保存并锁定。", Dock = DockStyle.Fill, ForeColor = Muted }, 0, 1);
+            Button help = Add("使用帮助 ↗", ShowHelp); heading.Controls.Add(help, 1, 0);
+            body.Controls.Add(heading, 0, 0);
+            TableLayoutPanel card = new TableLayoutPanel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(244, 248, 238), Padding = new Padding(17, 12, 16, 11), ColumnCount = 2, RowCount = 2 };
+            card.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); card.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 205));
+            card.RowStyles.Add(new RowStyle(SizeType.Absolute, 45)); card.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            TableLayoutPanel identity = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
+            identity.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); identity.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            identity.Controls.Add(vaultName, 0, 0); identity.Controls.Add(badge, 1, 0); card.Controls.Add(identity, 0, 0);
+            selected.Font = new Font(Font.FontFamily, 9); selected.AccessibleName = "加密目录位置"; card.Controls.Add(selected, 0, 1);
+            unlock = Add("输入密码解锁", UnlockVault); lockButton = Add("保存并锁定", LockVault); Primary(unlock); Primary(lockButton);
+            Panel primaryArea = new Panel { Dock = DockStyle.Fill, Padding = new Padding(12, 8, 0, 8) };
+            unlock.Dock = lockButton.Dock = DockStyle.Fill; primaryArea.Controls.Add(unlock); primaryArea.Controls.Add(lockButton);
+            primaryCreate = Add("创建加密文件夹", CreateVault); Primary(primaryCreate); primaryCreate.Dock = DockStyle.Fill; primaryArea.Controls.Add(primaryCreate);
+            card.Controls.Add(primaryArea, 1, 0); card.SetRowSpan(primaryArea, 2); body.Controls.Add(card, 0, 1);
+            TableLayoutPanel noticeText = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
+            noticeText.RowStyles.Add(new RowStyle(SizeType.Absolute, 26)); noticeText.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            noticeText.Controls.Add(noticeTitle, 0, 0); hint.Font = new Font(Font.FontFamily, 9); noticeText.Controls.Add(hint, 0, 1);
+            notice.Controls.Add(noticeText); notice.Controls.Add(progress); body.Controls.Add(notice, 0, 2);
+            TableLayoutPanel toolbar = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
+            toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180)); toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            FlowLayoutPanel fileHeading = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
+            fileHeading.Controls.Add(new Label { Text = "文件内容", AutoSize = true, Font = new Font(Font.FontFamily, 10, FontStyle.Bold), Margin = new Padding(0, 15, 0, 0) }); fileHeading.Controls.Add(count);
+            toolbar.Controls.Add(fileHeading, 0, 0);
+            show = Add("打开编辑区 ↗", ShowWorkspace); importFiles = Add("导入文件", ImportFiles); importFolder = Add("导入文件夹", ImportFolder);
+            show.BackColor = Color.FromArgb(235, 244, 226); actions.Controls.Add(show); actions.Controls.Add(importFolder); actions.Controls.Add(importFiles);
+            toolbar.Controls.Add(actions, 1, 0); body.Controls.Add(toolbar, 0, 3);
+            Panel fileArea = new Panel { Dock = DockStyle.Fill, BorderStyle = BorderStyle.FixedSingle };
+            files.Columns.Add("名称", 400); files.Columns.Add("大小", 100); files.Columns.Add("修改时间", 170);
+            fileArea.Controls.Add(files); fileArea.Controls.Add(empty); body.Controls.Add(fileArea, 0, 4);
+            files.Resize += delegate { if (files.ClientSize.Width > 320) files.Columns[0].Width = Math.Max(120, files.ClientSize.Width - files.Columns[1].Width - files.Columns[2].Width - 28); };
+            caption.Font = new Font(Font.FontFamily, 9); body.Controls.Add(caption, 0, 5);
+            FlowLayoutPanel management = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, Padding = new Padding(0, 5, 0, 0) };
+            entryButton = Add("创建图标入口", CreateEntry); recover = Add("恢复未锁定工作区", Recover); delete = Add("删除…", DeleteVault); delete.ForeColor = Color.FromArgb(157, 56, 52);
+            management.Controls.Add(entryButton); management.Controls.Add(recover); management.Controls.Add(delete); body.Controls.Add(management, 0, 6);
+            availability.Font = new Font(Font.FontFamily, 9); body.Controls.Add(availability, 0, 7);
+            Button helpStrip = Add("操作与恢复帮助：保存失败怎么办？  ↗", ShowHelp); helpStrip.Dock = DockStyle.Fill; helpStrip.TextAlign = ContentAlignment.MiddleLeft; helpStrip.BackColor = Color.FromArgb(248, 251, 244); body.Controls.Add(helpStrip, 0, 8);
+            status.Font = new Font(Font.FontFamily, 9); status.AccessibleName = "操作结果"; body.Controls.Add(status, 0, 9);
+            tips.SetToolTip(selected, "当前加密目录位置；备份时请备份整个目录。"); tips.SetToolTip(lockButton, "先在编辑器中保存并关闭文件。快捷键 Alt + L。");
+            tips.SetToolTip(importFiles, "复制到编辑区，保留源文件；同名文件不自动覆盖。"); tips.SetToolTip(importFolder, "复制整个文件夹，保留原文件夹。");
+            tips.SetToolTip(delete, "永久删除，不进入回收站；需再次验证密码。");
+            shell.Controls.Add(sidebar, 0, 0); shell.Controls.Add(body, 1, 0); Controls.Add(shell);
             FormClosing += OnClosing;
             Shown += delegate
             {
                 if (Directory.Exists(sessionsBase) && Directory.GetDirectories(sessionsBase).Length > 0)
-                    MessageBox.Show(this, "检测到上次未清理的工作区。若程序曾异常退出，其中可能仍有明文。请选择对应加密文件夹后点击“恢复未锁定工作区”，再保存并锁定。", "需要恢复");
+                    MessageBox.Show(this, "检测到上次未清理的工作区，其中可能仍有明文。请选择对应加密文件夹，点击“恢复未锁定工作区”，检查后保存并锁定。", "需要恢复", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             };
             RefreshState("尚未选择加密文件夹");
             if (!String.IsNullOrEmpty(openRoot)) Shown += async delegate { await OpenFromEntry(openRoot); };
         }
+        private static void Primary(Button button) { button.BackColor = Green; button.ForeColor = Color.White; button.FlatAppearance.BorderColor = Green; button.FlatAppearance.MouseOverBackColor = Color.FromArgb(28, 76, 56); button.Font = new Font("Microsoft YaHei UI", 10, FontStyle.Bold); }
+        private void ShowHelp(object sender, EventArgs e)
+        {
+            using (Form help = new Form { Text = "操作与恢复帮助 · FolderSeal", Font = Font, ForeColor = Ink, BackColor = Color.White, ClientSize = new Size(690, 590), MinimumSize = new Size(570, 430), StartPosition = FormStartPosition.CenterParent, MinimizeBox = false, MaximizeBox = false })
+            {
+                TableLayoutPanel layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(22), RowCount = 2, ColumnCount = 1 };
+                layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 49));
+                TextBox text = new TextBox { Dock = DockStyle.Fill, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, BorderStyle = BorderStyle.None, BackColor = Color.White, ForeColor = Ink, Text =
+                    "日常编辑\r\n输入密码解锁 → 打开编辑区 → 用原有软件编辑 → 保存并关闭文件 → 回到这里保存并锁定。仅关闭资源管理器不会锁定。\r\n\r\n保存失败\r\n先关闭可能占用文件的 Word、Excel 等程序，再重试。保存失败时保留当前编辑区，不要自行删除；具体原因以错误提示为准。\r\n\r\n密文已保存，清理未完成\r\n关闭占用文件的程序，点击“重试清理并锁定”。此时只继续清理，不重新生成密文；清理完成前不能继续导入或编辑。\r\n\r\n异常退出\r\n选择对应加密文件夹，点击“恢复未锁定工作区”，选择匹配工作区并验证密码。恢复后检查内容，再保存锁定。\r\n\r\n备份与密码\r\n锁定后备份整个密文目录，包括隐藏目录。快捷方式不是资料。普通导入保留源文件。忘记密码无法找回。\r\n\r\n快捷操作\r\nAlt + L：保存或重试锁定。文件夹管理操作需先锁定。处理中请等待结果，不要强制退出。\r\n\r\n保护范围\r\n管理员仍可强制删除。明文采用普通删除，不保证清除磁盘残留、编辑器缓存或历史副本；软件尚未经过独立安全审计。" };
+                Button close = Add("返回", delegate { help.Close(); }); close.DialogResult = DialogResult.Cancel; close.Anchor = AnchorStyles.Right | AnchorStyles.Bottom;
+                layout.Controls.Add(text, 0, 0); layout.Controls.Add(close, 0, 1); help.Controls.Add(layout); help.CancelButton = close; help.ShowDialog(this);
+            }
+        }
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            if (keyData == (Keys.Alt | Keys.L) && !busy && session != null && session.Open) { LockVault(this, EventArgs.Empty); return true; }
+            return base.ProcessCmdKey(ref msg, keyData);
+        }
+        protected override void Dispose(bool disposing) { if (disposing) tips.Dispose(); base.Dispose(disposing); }
         private async Task OpenFromEntry(string root)
         {
             try
@@ -896,44 +973,100 @@ namespace FolderSeal
         }
         private Button Add(string text, EventHandler click)
         {
-            Button button = new Button { Text = text, AutoSize = true, Height = 36, Padding = new Padding(7, 2, 7, 2), Margin = new Padding(0, 0, 9, 8), FlatStyle = FlatStyle.System };
-            button.Click += click; actions.Controls.Add(button); return button;
+            Button button = new ActionButton { Text = text, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, MinimumSize = new Size(75, 38), Padding = new Padding(8, 4, 8, 4), Margin = new Padding(0, 0, 7, 0), FlatStyle = FlatStyle.Flat, BackColor = Color.White, ForeColor = Ink, Cursor = Cursors.Hand, AccessibleName = text };
+            button.FlatAppearance.BorderColor = Line; button.Click += click; return button;
+        }
+        private sealed class ActionButton : Button
+        {
+            private bool hovered;
+            public ActionButton() { DoubleBuffered = true; }
+            protected override void OnMouseEnter(EventArgs e) { hovered = true; Invalidate(); base.OnMouseEnter(e); }
+            protected override void OnMouseLeave(EventArgs e) { hovered = false; Invalidate(); base.OnMouseLeave(e); }
+            protected override void OnPaint(PaintEventArgs e)
+            {
+                e.Graphics.Clear(Parent == null ? Color.White : Parent.BackColor);
+                e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                Rectangle bounds = new Rectangle(1, 1, Math.Max(1, Width - 3), Math.Max(1, Height - 3));
+                int arc = Math.Min(12, Math.Min(bounds.Width, bounds.Height));
+                using (var shape = new System.Drawing.Drawing2D.GraphicsPath())
+                {
+                    shape.AddArc(bounds.Left, bounds.Top, arc, arc, 180, 90); shape.AddArc(bounds.Right - arc, bounds.Top, arc, arc, 270, 90);
+                    shape.AddArc(bounds.Right - arc, bounds.Bottom - arc, arc, arc, 0, 90); shape.AddArc(bounds.Left, bounds.Bottom - arc, arc, arc, 90, 90); shape.CloseFigure();
+                    Color fill = !Enabled ? Color.FromArgb(243, 246, 239) : hovered ? ControlPaint.Light(BackColor, .12f) : BackColor;
+                    using (var brush = new SolidBrush(fill)) e.Graphics.FillPath(brush, shape);
+                    using (var pen = new Pen(Enabled ? FlatAppearance.BorderColor : Line)) e.Graphics.DrawPath(pen, shape);
+                }
+                Rectangle text = Rectangle.Inflate(ClientRectangle, -8, -4);
+                TextFormatFlags flags = TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis;
+                flags |= TextAlign == ContentAlignment.MiddleLeft ? TextFormatFlags.Left : TextFormatFlags.HorizontalCenter;
+                TextRenderer.DrawText(e.Graphics, Text, Font, text, Enabled ? ForeColor : Color.FromArgb(112, 124, 106), flags);
+                if (Focused && ShowFocusCues) ControlPaint.DrawFocusRectangle(e.Graphics, Rectangle.Inflate(ClientRectangle, -5, -5));
+            }
         }
         private void RefreshState(string message)
         {
-            status.Text = (busy ? "处理中 · " : "") + message;
-            bool open = session != null && session.Open;
+            bool has = session != null, open = has && session.Open, cleanup = open && session.CleanupPending;
+            bool editable = !busy && open && !cleanup;
             create.Enabled = choose.Enabled = !busy && !open;
-            unlock.Enabled = !busy && session != null && !open;
-            show.Enabled = importFiles.Enabled = importFolder.Enabled = !busy && open && !session.CleanupPending;
-            lockButton.Enabled = !busy && open;
-            delete.Enabled = !busy && session != null && !open;
-            recover.Enabled = !busy && session != null && !open;
-            entryButton.Enabled = !busy && session != null && !open;
-            selected.Text = session == null ? "选择一个位置开始创建，或选择已有加密文件夹" : session.Root;
-            files.Items.Clear();
-            if (open && Directory.Exists(session.Work))
+            unlock.Enabled = !busy && has && !open; unlock.Visible = has && !open; primaryCreate.Visible = !has; primaryCreate.Enabled = !busy;
+            lockButton.Enabled = !busy && open; lockButton.Visible = open;
+            show.Enabled = importFiles.Enabled = importFolder.Enabled = editable; actions.Visible = editable;
+            delete.Enabled = recover.Enabled = entryButton.Enabled = !busy && has && !open;
+            lockButton.Text = busy ? "处理中，请稍候…" : cleanup ? "重试清理并锁定" : operationFailed ? "重试保存并锁定" : "保存并锁定";
+            selected.Text = has ? session.Root : "支持 Windows 本机 NTFS 磁盘";
+            vaultName.Text = has ? new DirectoryInfo(session.Root).Name : "尚未选择加密文件夹";
+            string state = busy ? "处理中" : cleanup ? "清理未完成" : operationFailed ? "操作失败" : open ? "已解锁" : has ? "已锁定" : "未选择";
+            badge.Text = state; badge.AccessibleName = "文件夹状态：" + state;
+            Color amber = Color.FromArgb(121, 80, 25), red = Color.FromArgb(148, 55, 47);
+            badge.BackColor = notice.BackColor = operationFailed && !cleanup ? Color.FromArgb(255, 244, 238) : open && !busy ? Color.FromArgb(255, 249, 234) : Color.FromArgb(240, 246, 233);
+            notice.ForeColor = hint.ForeColor = operationFailed && !cleanup ? red : open && !busy ? amber : Green;
+            badge.ForeColor = notice.ForeColor;
+            progress.Visible = busy;
+            if (busy) { noticeTitle.Text = "正在处理，请等待结果"; hint.Text = "正在执行加密、核验或清理操作。大文件夹可能耗时较长；请勿强制退出或重复点击，完成后将更新状态。"; }
+            else if (cleanup) { noticeTitle.Text = "密文已保存，但明文尚未清理完"; hint.Text = "请先关闭占用文件的程序，再点击“重试清理并锁定”。本次只重试清理，不重新生成密文。"; }
+            else if (operationFailed) { noticeTitle.Text = open ? "操作未完成，编辑内容仍保留在工作区" : "操作未完成，请查看原因后重试"; hint.Text = lastFailure + (open ? " 请保留编辑区；关闭可能占用文件的程序后再重试。" : " 原有资料请保留。"); }
+            else if (open) { noticeTitle.Text = "文件可以编辑，但尚未锁定"; hint.Text = "编辑区中存在未加密的文件。请先在编辑器中保存并关闭文件，再回到这里保存并锁定。仅关闭资源管理器不会锁定。"; }
+            else if (has) { noticeTitle.Text = "当前文件夹已锁定"; hint.Text = "输入密码后查看和编辑文件。创建图标入口可方便下次访问；备份时须包含整个密文目录。"; }
+            else { noticeTitle.Text = "先创建，或选择已有的加密文件夹"; hint.Text = "新建时单独设置密码，创建后为锁定状态。已有资料请通过左侧“选择已有文件夹”打开。忘记密码无法找回。"; }
+            if (!String.IsNullOrEmpty(pendingSource) && File.Exists(pendingSource) && !busy)
+                hint.Text += " 待移入文件：" + Path.GetFileName(pendingSource) + "；加密核验完成且源文件未变化才删除源明文。";
+            files.BeginUpdate();
+            try
             {
-                foreach (string file in Paths.Files(session.Work))
-                {
-                    FileInfo info = new FileInfo(file);
-                    files.Items.Add(new ListViewItem(new[] { Paths.NameUnder(session.Work, file), info.Length.ToString("N0") + " B", info.LastWriteTime.ToString("yyyy-MM-dd HH:mm") }));
-                }
+                files.Items.Clear();
+                if (editable && Directory.Exists(session.Work))
+                    foreach (string file in Paths.Files(session.Work))
+                    {
+                        FileInfo info = new FileInfo(file);
+                        files.Items.Add(new ListViewItem(new[] { Paths.NameUnder(session.Work, file), FormatSize(info.Length), info.LastWriteTime.ToString("yyyy-MM-dd HH:mm") }));
+                    }
             }
-            hint.Text = open ? (session.CleanupPending ? "密文已保存，但明文清理尚未完成。请关闭占用文件的程序，再次点击“保存并锁定”。此时不能继续编辑或导入。" : "已解锁：编辑区包含明文。请先关闭正在编辑的文件，再点击“保存并锁定”；保存失败时不要删除工作区。")
-                : "锁定后只能通过软件输入密码访问。防删除针对常规操作；管理员接管权限仍可删除。"
-                + (!String.IsNullOrEmpty(pendingSource) && File.Exists(pendingSource) ? "\r\n待移入文件：" + Path.GetFileName(pendingSource) + "。创建成功并完成加密验证后才删除原文件。" : "");
+            finally { files.EndUpdate(); }
+            files.Visible = editable && files.Items.Count > 0; empty.Visible = !files.Visible;
+            empty.Text = busy ? "正在处理，请稍候…\r\n全部步骤完成后才会显示“已锁定”。" : cleanup ? "等待完成明文清理\r\n请关闭占用文件的程序，再重试清理。" : open ? "编辑区还没有文件\r\n导入文件、文件夹，或打开编辑区放入资料。" : has ? "文件已锁定\r\n输入密码后查看和编辑文件。\r\n锁定时不展示文件名称与内容。" : "从一个加密文件夹开始\r\n点击左侧“创建加密文件夹”或“选择已有文件夹”。";
+            count.Visible = editable; count.Text = files.Items.Count.ToString() + " 个文件";
+            caption.Text = cleanup ? "明文可能仍有残留；清理完成前不标记为已锁定。" : editable ? "导入会保留源文件；编辑器内保存后，还需在这里保存并锁定。" : "备份整个密文目录；图标快捷方式不是资料本体。";
+            switchReason.Text = open || busy ? "先完成保存与清理，才能创建或切换文件夹。" : "新建文件夹，或选择已有目录。每个文件夹独立密码。";
+            availability.Text = !has ? "选择加密文件夹后，才能使用管理操作。" : open || busy ? "以上管理操作需先完成锁定。删除还需再次验证密码，且不进入回收站。" : "图标入口不是资料本体。删除将永久移除资料，并需再次验证密码。";
+            status.Text = message; tips.SetToolTip(status, message); tips.SetToolTip(hint, hint.Text); tips.SetToolTip(selected, selected.Text);
+        }
+        private static string FormatSize(long size)
+        {
+            if (size >= 1024L * 1024 * 1024) return (size / (1024.0 * 1024 * 1024)).ToString("0.##") + " GB";
+            if (size >= 1024L * 1024) return (size / (1024.0 * 1024)).ToString("0.##") + " MB";
+            if (size >= 1024) return (size / 1024.0).ToString("0.##") + " KB";
+            return size.ToString() + " B";
         }
         private async Task<bool> Run(Func<string> work)
         {
             if (busy) return false;
-            busy = true; RefreshState("请稍候，较大的文件夹可能需要一些时间"); UseWaitCursor = true;
+            operationFailed = false; lastFailure = null; busy = true; RefreshState("处理中，请稍候"); UseWaitCursor = true;
             string result = null; Exception failure = null;
             try { result = await Task.Run(work); }
             catch (Exception error) { failure = error; }
-            busy = false; UseWaitCursor = false;
+            busy = false; UseWaitCursor = false; operationFailed = failure != null; lastFailure = failure == null ? null : failure.Message;
             try { RefreshState(failure == null ? result : "操作未完成，原有数据请保留"); }
-            catch (Exception error) { failure = failure ?? error; }
+            catch (Exception error) { failure = failure ?? error; operationFailed = true; lastFailure = failure.Message; noticeTitle.Text = "操作未完成，请保留当前资料"; hint.Text = lastFailure; }
             if (failure != null)
             {
                 string detail = failure.Message;
@@ -990,7 +1123,7 @@ namespace FolderSeal
                     Header.Read(Path.Combine(dialog.SelectedPath, VaultSession.DataName));
                     Native.RequireProtectedParent(Path.GetDirectoryName(Paths.Full(dialog.SelectedPath)));
                     if (session != null) session.Dispose();
-                    session = new VaultSession(dialog.SelectedPath, sessionsBase, true); RefreshState("已锁定 · 输入密码后访问");
+                    session = new VaultSession(dialog.SelectedPath, sessionsBase, true); operationFailed = false; lastFailure = null; RefreshState("已锁定 · 输入密码后访问");
                 }
                 catch (Exception error) { MessageBox.Show(this, error.Message, "无法选择"); }
             }
@@ -1002,11 +1135,13 @@ namespace FolderSeal
         }
         private async void LockVault(object sender, EventArgs e)
         {
+            if (busy || session == null || !session.Open) return;
+            if (!session.CleanupPending && MessageBox.Show(this, "请先在编辑器中保存修改，并关闭正在编辑的文件。\r\n接下来将生成新密文、核验并清理编辑区。继续吗？", "保存并锁定", MessageBoxButtons.OKCancel, MessageBoxIcon.Information, MessageBoxDefaultButton.Button2) != DialogResult.OK) return;
             await Run(delegate { session.Lock(); return "已锁定 · 已验证加密内容，明文工作区已清理"; });
         }
         private void ShowWorkspace(object sender, EventArgs e)
         {
-            if (session != null && session.Open)
+            if (!busy && session != null && session.Open && !session.CleanupPending)
                 Process.Start(new ProcessStartInfo("explorer.exe", "\"" + session.Work + "\"") { UseShellExecute = true });
         }
         private async void ImportFiles(object sender, EventArgs e)

@@ -1,6 +1,6 @@
 ﻿# Copyright (c) 2026 EurekaGao. MIT License.
 [CmdletBinding()]
-param([switch]$Validate, [switch]$ValidateEntry, [switch]$ValidateAcl)
+param([switch]$Validate, [switch]$ValidateEntry, [switch]$ValidateAcl, [switch]$ValidateUi)
 $ErrorActionPreference = 'Stop'
 $taskRoot = Split-Path -Parent $PSScriptRoot
 $taskCompiler = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
@@ -30,6 +30,12 @@ if ($Validate) {
 if ($ValidateEntry) {
     & "$taskOutput\FolderSeal.EntryTests.exe" $taskTestParent
     if ($LASTEXITCODE -ne 0) { throw '入口验证失败；生成的样例保留在 artifacts/test-work 中。' }
+}
+if ($ValidateUi) {
+    & $taskCompiler /nologo /optimize+ /target:exe /main:UiTests "/out:$taskOutput\FolderSeal.UiTests.exe" @taskReferences $taskSource (Join-Path $taskRoot 'tests\UiTests.cs')
+    if ($LASTEXITCODE -ne 0) { throw '界面验证程序编译失败。' }
+    & "$taskOutput\FolderSeal.UiTests.exe" $taskTestParent
+    if ($LASTEXITCODE -ne 0) { throw '界面验证失败；生成的样例保留在 artifacts/test-work 中。' }
 }
 if ($ValidateAcl) {
     & "$taskOutput\FolderSeal.Tests.exe" $taskTestParent --acl

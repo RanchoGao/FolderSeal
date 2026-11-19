@@ -1,4 +1,4 @@
-# Copyright (c) 2026 EurekaGao. MIT License.
+﻿# Copyright (c) 2026 EurekaGao. MIT License.
 # 管理员 PowerShell 中运行：验证安装包在干净临时目录中的安装、重复安装与卸载行为。
 [CmdletBinding()]
 param([string]$SetupPath)

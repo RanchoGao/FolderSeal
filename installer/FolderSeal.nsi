@@ -1,4 +1,4 @@
-﻿; Copyright (c) EurekaGao. Installer contains program files only.
+; Copyright (c) EurekaGao. Installer contains program files only.
 Unicode true
 RequestExecutionLevel admin
 ManifestDPIAware true
@@ -14,7 +14,7 @@ SetCompressor /SOLID lzma
 !endif
 !define PRODUCT "文件夹加密工具"
 !define PRODUCT_ID "EurekaGao.FolderSeal"
-!define VERSION "2.1.0"
+!define VERSION "2.2.0"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_ID}"
 !define PRODUCT_MARKER "EurekaGao.FolderSeal.v1"
 
