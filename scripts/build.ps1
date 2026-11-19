@@ -1,6 +1,6 @@
 ﻿# Copyright (c) 2026 EurekaGao. MIT License.
 [CmdletBinding()]
-param([switch]$Validate, [switch]$ValidateEntry, [switch]$ValidateAcl, [switch]$ValidateUi, [switch]$ValidateIcon)
+param([switch]$Validate, [switch]$ValidateEntry, [switch]$ValidateAcl, [switch]$ValidateUi, [switch]$ValidateIcon, [switch]$ValidateInstance)
 $ErrorActionPreference = 'Stop'
 $taskRoot = Split-Path -Parent $PSScriptRoot
 $taskCompiler = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
@@ -56,6 +56,12 @@ if ($ValidateIcon) {
     if ($LASTEXITCODE -ne 0) { throw 'Icon verification compile failed.' }
     & "$taskOutput\FolderSeal.IconTests.exe" $taskIcon "$taskOutput\FolderSeal.exe" (Join-Path $taskTestParent 'icon-preview')
     if ($LASTEXITCODE -ne 0) { throw 'Icon verification failed.' }
+}
+if ($ValidateInstance) {
+    & $taskCompiler /nologo /optimize+ /target:exe /main:SingleInstanceTests "/out:$taskOutput\FolderSeal.SingleInstanceTests.exe" @taskReferences @taskBranding $taskSource (Join-Path $taskRoot 'tests\SingleInstanceTests.cs')
+    if ($LASTEXITCODE -ne 0) { throw 'Single-instance verification compile failed.' }
+    & "$taskOutput\FolderSeal.SingleInstanceTests.exe" $taskTestParent
+    if ($LASTEXITCODE -ne 0) { throw 'Single-instance verification failed.' }
 }
 if ($ValidateAcl) {
     & "$taskOutput\FolderSeal.Tests.exe" $taskTestParent --acl

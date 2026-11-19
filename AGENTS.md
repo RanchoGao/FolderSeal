@@ -1,4 +1,4 @@
-# AGENTS.md
+﻿# AGENTS.md
 
 ## 项目
 
@@ -38,6 +38,7 @@ FolderSeal（文件夹加密工具）：C# + Windows Forms + .NET Framework 4.7.
 ```powershell
 .\scripts\build.ps1 -Validate -ValidateEntry     # 编译并跑核心与入口验证
 .\scripts\build.ps1 -ValidateUi -ValidateIcon    # 界面、原生图标及透明边缘验证
+.\scripts\build.ps1 -ValidateInstance             # 多进程单实例与请求转交验证
 .\scripts\build.ps1 -ValidateAcl                # 管理员 PowerShell：权限验证
 .\scripts\package.ps1                           # 编译并生成安装包到 artifacts/dist
 .\scripts\verify-installer.ps1                  # 管理员 PowerShell：安装与卸载验证
