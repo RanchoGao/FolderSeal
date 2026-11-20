@@ -23,7 +23,7 @@ internal static class UiTests
     {
         foreach (Control child in root.Controls) { yield return child; foreach (Control nested in Walk(child)) yield return nested; }
     }
-    private static void Render(MainForm form, string output, string name)
+    private static void Render(Form form, string output, string name)
     {
         // Mark visible for offscreen rendering without firing Form.Shown or scanning user sessions.
         typeof(Control).GetMethod("SetState", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(form, new object[] { 2, true });
@@ -78,14 +78,17 @@ internal static class UiTests
                 Check(C(form, "show").Bottom <= C(form, "show").Parent.ClientSize.Height && C(form, "importFiles").Bottom <= C(form, "importFiles").Parent.ClientSize.Height, "file toolbar buttons fit without vertical clipping");
                 Check(C(form, "show").Enabled && !C(form, "create").Enabled && !C(form, "choose").Enabled, "unlocked view prevents switching and permits editing");
                 Check(((ListView)C(form, "files")).Items.Count == 1 && C(form, "files").Visible, "unlocked view lists generated file");
+                ((ListView)C(form, "files")).Items[0].Selected = true;
+                Check(form.SelectedFileToOpen() == Path.Combine(vault.Work, "示例笔记.md"), "file activation resolves selected Unicode file inside editing workspace");
                 Check(C(form, "lockButton").Visible && !C(form, "unlock").Visible, "one primary action while unlocked");
-                Check(!M(form, "delete").Enabled && !M(form, "entryButton").Enabled && !M(form, "recover").Enabled, "unlocked view prevents destructive management");
-                Check(C(form, "more").Visible && M(form, "copyPath").Enabled, "unlocked view retains more menu and copy path");
+                Check(!M(form, "delete").Enabled && !M(form, "recover").Enabled, "unlocked view prevents destructive management");
+                Check(C(form, "more").Visible && !C(form, "more").Enabled, "unlocked view disables management until locked");
                 Check(C(form, "notice").Visible && !C(form, "noticeTitle").Visible && body.RowStyles[1].Height <= 42, "normal editing uses a compact reminder");
                 Set(form, "busy", true); Refresh(form);
+                Check(form.SelectedFileToOpen() == null, "processing state cannot open a file");
                 Check(form.LaunchAction(new[] { "--open-vault", vault.Root }) == "busy", "busy work refuses new entry operations");
                 Check(!C(form, "lockButton").Enabled && !C(form, "show").Enabled && !C(form, "choose").Enabled, "busy view disables conflicting actions");
-                Check(!C(form, "more").Enabled && !M(form, "copyPath").Enabled && !M(form, "delete").Enabled, "busy view disables more menu actions");
+                Check(!C(form, "more").Enabled && !M(form, "recover").Enabled && !M(form, "delete").Enabled, "busy view disables more menu actions");
                 Check(((ListView)C(form, "files")).Items.Count == 0, "busy view removes stale file listing");
                 Render(form, output, "busy");
                 Set(form, "busy", false); Set(form, "operationFailed", true); Set(form, "lastFailure", "Generated failure example"); Refresh(form);
@@ -106,11 +109,12 @@ internal static class UiTests
                 Set(form, "operationFailed", false); Set(form, "lastFailure", null); vault.Lock(); Refresh(form);
                 Check(C(form, "unlock").Visible && !C(form, "lockButton").Visible && C(form, "create").Enabled, "locked view restores unlock and switching");
                 Check(!C(form, "files").Visible && !C(form, "count").Visible && ((ListView)C(form, "files")).Items.Count == 0, "locked view removes file names and counts");
-                Check(M(form, "delete").Enabled && M(form, "recover").Enabled && M(form, "entryButton").Enabled, "locked view enables authenticated management");
+                Check(M(form, "delete").Enabled && M(form, "recover").Enabled, "locked view enables authenticated management");
                 Check(!C(form, "notice").Visible && body.RowStyles[1].Height == 0, "locked view has no persistent explanation panel");
+                Check(form.SelectedFileToOpen() == null, "locked state cannot open a file");
                 Check(C(form, "vaultName").AccessibleDescription == vault.Root, "full folder path remains accessible without a path row");
                 ContextMenuStrip menu = (ContextMenuStrip)Get(form, "moreMenu");
-                Check(menu.Items.Count == 5 && menu.Items[3] is ToolStripSeparator && M(form, "delete").Text.Contains("删除"), "management menu retains actions and separates deletion");
+                Check(menu.Items.Count == 3 && menu.Items[0] == M(form, "recover") && menu.Items[1] is ToolStripSeparator && menu.Items[2] == M(form, "delete"), "management menu contains only recovery and separated deletion");
                 Render(form, output, "locked");
                 form.Size = form.MinimumSize; Render(form, output, "minimum-size");
                 Check(C(form, "unlock").Width > 120 && C(form, "files").Height >= 100, "minimum window retains usable primary action and file area");
@@ -126,6 +130,54 @@ internal static class UiTests
                 Check(C(pending, "notice").Visible && C(pending, "hint").Text.Contains(Path.GetFileName(source)), "pending source request remains visible without a duplicate create button");
                 Check(Walk(pending).OfType<Button>().Count(x => x.Text.Contains("创建加密文件夹")) == 1, "pending source still uses only sidebar creation");
             }
+            VaultCatalog catalog = new VaultCatalog(Path.Combine(fixture, "settings", "catalog.egcatalog"), true);
+            catalog.Add(Path.Combine(fixture, "Missing location"), false);
+            catalog.Add(requestFixture(fixture), true); catalog.Scanned = true; catalog.Summary = "上次扫描已取消，已记住位置；可重新扫描";
+            using (VaultLibraryForm library = new VaultLibraryForm(catalog, "UI-Test-Only-927!"))
+            {
+                library.RefreshRows(); Render(library, output, "library");
+                ListView list = (ListView)Get(library, "list"); TextBox search = (TextBox)Get(library, "search");
+                Check(list.Items.Count == 2 && list.Items.Cast<ListViewItem>().Any(x => x.SubItems[2].Text == "位置不可用"), "library retains unavailable locations");
+                search.Text = "missing"; Check(list.Items.Count == 1, "library search matches paths case insensitively");
+                search.Text = ""; library.Size = library.MinimumSize; Render(library, output, "library-minimum");
+                Check(list.Height > 100 && ((Button)Get(library, "open")).Right < ((Button)Get(library, "open")).Parent.Width, "library minimum size retains list and actions");
+                Check(list.Columns.Cast<ColumnHeader>().Sum(x => x.Width) <= list.ClientSize.Width, "all library status columns fit minimum width");
+            }
+            using (VaultLibraryForm library = new VaultLibraryForm(catalog, "UI-Test-Only-927!"))
+            using (Timer timer = new Timer { Interval = 150 })
+            {
+                timer.Tick += delegate
+                {
+                    timer.Stop();
+                    Check(Get(library, "scanning") == null, "cached library does not start a disk scan on show");
+                    ListView list = (ListView)Get(library, "list"); list.Items[0].Selected = true;
+                    ((Button)Get(library, "open")).PerformClick();
+                };
+                timer.Start(); Check(library.ShowDialog() == DialogResult.OK && library.SelectedRoot != null, "cached library selects a location without password prompts");
+            }
+            using (PasswordDialog password = new PasswordDialog(false, "输入总密码"))
+            {
+                Render(password, output, "master-password");
+                Check(Walk(password).OfType<Label>().Any(x => x.Text == "输入总密码"), "master password prompt uses correct wording");
+            }
+            string state = Path.Combine(fixture, "startup-state");
+            VaultCatalog startup = new VaultCatalog(Path.Combine(state, "catalog.egcatalog")); startup.Scanned = true; startup.Save("UI-Test-Only-927!");
+            using (MainForm authenticated = new MainForm(source, null, state))
+            using (Timer timer = new Timer { Interval = 100 })
+            {
+                timer.Tick += delegate
+                {
+                    PasswordDialog dialog = Application.OpenForms.OfType<PasswordDialog>().FirstOrDefault();
+                    if (dialog != null)
+                    {
+                        Check(Get(authenticated, "masterPassword") == null && Get(authenticated, "session") == null, "startup hides vault information before master authentication");
+                        ((TextBox)Get(dialog, "first")).Text = "UI-Test-Only-927!"; ((Button)dialog.AcceptButton).PerformClick();
+                    }
+                    else if (Get(authenticated, "masterPassword") != null)
+                    { timer.Stop(); Check((string)Get(authenticated, "masterPassword") == "UI-Test-Only-927!", "startup verifies generated master catalog"); authenticated.Close(); }
+                };
+                timer.Start(); authenticated.ShowDialog();
+            }
             passed = true; Console.WriteLine("SUCCESS " + checks + " UI checks"); return 0;
         }
         catch (Exception error) { Console.Error.WriteLine(error); return 1; }
@@ -134,5 +186,10 @@ internal static class UiTests
             if (vault != null) vault.Dispose();
             if (passed && Paths.Inside(fixture, parent) && Path.GetFileName(fixture).StartsWith("generated-ui-")) Paths.DeleteTree(fixture);
         }
+    }
+    private static string requestFixture(string fixture)
+    {
+        string path = Path.Combine(fixture, "Recorded vault"); Directory.CreateDirectory(path);
+        File.WriteAllText(Path.Combine(path, VaultSession.DataName), "UI state fixture only"); return path;
     }
 }

@@ -1,6 +1,6 @@
 ﻿# Copyright (c) 2026 EurekaGao. MIT License.
 [CmdletBinding()]
-param([switch]$Validate, [switch]$ValidateEntry, [switch]$ValidateAcl, [switch]$ValidateUi, [switch]$ValidateIcon, [switch]$ValidateInstance)
+param([switch]$Validate, [switch]$ValidateEntry, [switch]$ValidateAcl, [switch]$ValidateUi, [switch]$ValidateIcon, [switch]$ValidateInstance, [switch]$ValidateLibrary, [switch]$ValidateDiscovery)
 $ErrorActionPreference = 'Stop'
 $taskRoot = Split-Path -Parent $PSScriptRoot
 $taskCompiler = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
@@ -62,6 +62,18 @@ if ($ValidateInstance) {
     if ($LASTEXITCODE -ne 0) { throw 'Single-instance verification compile failed.' }
     & "$taskOutput\FolderSeal.SingleInstanceTests.exe" $taskTestParent
     if ($LASTEXITCODE -ne 0) { throw 'Single-instance verification failed.' }
+}
+if ($ValidateDiscovery) {
+    & $taskCompiler /nologo /optimize+ /target:exe /main:DiscoveryTests "/out:$taskOutput\FolderSeal.DiscoveryTests.exe" @taskReferences @taskBranding $taskSource (Join-Path $taskRoot 'tests\DiscoveryTests.cs')
+    if ($LASTEXITCODE -ne 0) { throw '扫描过滤验证编译失败。' }
+    & "$taskOutput\FolderSeal.DiscoveryTests.exe" $taskTestParent
+    if ($LASTEXITCODE -ne 0) { throw '扫描过滤验证失败；样例保留在 artifacts/test-work。' }
+}
+if ($ValidateLibrary) {
+    & $taskCompiler /nologo /optimize+ /target:exe /main:LibraryTests "/out:$taskOutput\FolderSeal.LibraryTests.exe" @taskReferences @taskBranding $taskSource (Join-Path $taskRoot 'tests\LibraryTests.cs')
+    if ($LASTEXITCODE -ne 0) { throw '文件夹管理验证程序编译失败。' }
+    & "$taskOutput\FolderSeal.LibraryTests.exe" $taskTestParent
+    if ($LASTEXITCODE -ne 0) { throw '文件夹管理验证失败；样例保留在 artifacts/test-work 中。' }
 }
 if ($ValidateAcl) {
     & "$taskOutput\FolderSeal.Tests.exe" $taskTestParent --acl

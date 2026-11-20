@@ -10,6 +10,7 @@
 *.log
 # Never commit vaults, plaintext sessions, or local credentials
 *.egvault
+*.egcatalog
 .access.lock
 .folderseal-session
 .env
