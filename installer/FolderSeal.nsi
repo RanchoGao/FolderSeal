@@ -14,7 +14,7 @@ SetCompressor /SOLID lzma
 !endif
 !define PRODUCT "密封夹"
 !define PRODUCT_ID "EurekaGao.FolderSeal"
-!define VERSION "2.5.7"
+!define VERSION "2.6.0"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_ID}"
 !define PRODUCT_MARKER "EurekaGao.FolderSeal.v1"
 
@@ -35,7 +35,7 @@ VIAddVersionKey /LANG=2052 "LegalCopyright" "Copyright (c) EurekaGao"
 !define MUI_ICON "${PROJECT_ROOT}\assets\FolderSeal.ico"
 !define MUI_UNICON "${PROJECT_ROOT}\assets\FolderSeal.ico"
 !define MUI_WELCOMEPAGE_TITLE "安装密封夹"
-!define MUI_WELCOMEPAGE_TEXT "在你选择的位置创建独立的加密文件夹，用一个密码打开所有加密文件夹，并限制常规删除。$\r$\n$\r$\n安装程序只安装软件和说明，不会移动、加密或删除你的任何资料。密码需要你在软件中自行设置。$\r$\n$\r$\n安装和运行软件需要管理员授权。"
+!define MUI_WELCOMEPAGE_TEXT "在你选择的位置创建独立的加密文件夹，用一个密码打开所有加密文件夹，并限制常规删除。$\r$\n$\r$\n安装程序只安装软件和说明，不会移动、加密或删除你的任何资料。安装后可直接在资源管理器右键加密文件或文件夹。密码需要你在软件中自行设置。$\r$\n$\r$\n安装和运行软件需要管理员授权。"
 !define MUI_FINISHPAGE_RUN "$INSTDIR\FolderSeal.exe"
 !define MUI_FINISHPAGE_RUN_TEXT "打开密封夹"
 !define MUI_FINISHPAGE_RUN_NOTCHECKED
@@ -148,6 +148,18 @@ Section "程序和开始菜单入口（必选）" MainSection
   WriteRegDWORD HKLM "${UNINSTALL_KEY}" "NoModify" 1
   WriteRegDWORD HKLM "${UNINSTALL_KEY}" "NoRepair" 1
   WriteRegDWORD HKLM "${UNINSTALL_KEY}" "EstimatedSize" 512
+  ; Explorer verbs for the current user; the program switch and uninstaller remove the same keys.
+  WriteRegStr HKCU "Software\Classes\Directory\shell\FolderSeal.Seal" "" "加密此文件夹（密封夹）"
+  WriteRegStr HKCU "Software\Classes\Directory\shell\FolderSeal.Seal" "Icon" "$\"$INSTDIR\FolderSeal.exe$\",0"
+  WriteRegStr HKCU "Software\Classes\Directory\shell\FolderSeal.Seal" "MultiSelectModel" "Single"
+  WriteRegStr HKCU "Software\Classes\Directory\shell\FolderSeal.Seal\command" "" "$\"$INSTDIR\FolderSeal.exe$\" --seal $\"%1$\""
+  WriteRegStr HKCU "Software\Classes\*\shell\FolderSeal.Seal" "" "加密此文件（密封夹）"
+  WriteRegStr HKCU "Software\Classes\*\shell\FolderSeal.Seal" "Icon" "$\"$INSTDIR\FolderSeal.exe$\",0"
+  WriteRegStr HKCU "Software\Classes\*\shell\FolderSeal.Seal" "MultiSelectModel" "Single"
+  WriteRegStr HKCU "Software\Classes\*\shell\FolderSeal.Seal\command" "" "$\"$INSTDIR\FolderSeal.exe$\" --seal $\"%1$\""
+  WriteRegStr HKCU "Software\Classes\Directory\shell\FolderSeal.Open" "" "用密封夹打开"
+  WriteRegStr HKCU "Software\Classes\Directory\shell\FolderSeal.Open" "Icon" "$\"$INSTDIR\FolderSeal.exe$\",0"
+  WriteRegStr HKCU "Software\Classes\Directory\shell\FolderSeal.Open\command" "" "$\"$INSTDIR\FolderSeal.exe$\" --open-vault $\"%1$\""
   Goto installed
   install_failed:
     MessageBox MB_OK|MB_ICONSTOP "程序文件未能完整安装。请关闭正在运行的软件后重试。"
@@ -198,6 +210,9 @@ Section "Uninstall"
   DeleteRegKey HKLM "${UNINSTALL_KEY}"
   Delete "$INSTDIR\.folderseal-product"
   Delete "$INSTDIR\Uninstall.exe"
+  DeleteRegKey HKCU "Software\Classes\Directory\shell\FolderSeal.Seal"
+  DeleteRegKey HKCU "Software\Classes\*\shell\FolderSeal.Seal"
+  DeleteRegKey HKCU "Software\Classes\Directory\shell\FolderSeal.Open"
   RMDir "$INSTDIR"
   Goto removed
   uninstall_failed:

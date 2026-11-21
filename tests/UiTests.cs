@@ -175,7 +175,7 @@ internal static class UiTests
                 Check(form.SelectedFileToOpen() == null, "locked state cannot open a file");
                 Check(C(form, "vaultName").AccessibleDescription == vault.Root, "full folder path remains accessible without a path row");
                 ContextMenuStrip menu = (ContextMenuStrip)Get(form, "moreMenu");
-                Check(menu.Items.Count == 3 && menu.Items[0] == M(form, "recover") && menu.Items[1] is ToolStripSeparator && menu.Items[2] == M(form, "delete"), "management menu contains only recovery and separated deletion");
+                Check(menu.Items.Count == 4 && menu.Items[0] == M(form, "recover") && menu.Items[1] == M(form, "explorerMenu") && menu.Items[2] is ToolStripSeparator && menu.Items[3] == M(form, "delete"), "management menu contains recovery, explorer menu and separated deletion");
                 Render(form, output, "locked");
                 form.Size = form.MinimumSize; Render(form, output, "minimum-size");
                 Check(C(form, "unlock").Width > 120 && C(form, "files").Height >= 100, "minimum window retains usable primary action and file area");

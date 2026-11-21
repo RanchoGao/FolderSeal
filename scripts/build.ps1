@@ -1,6 +1,6 @@
 ﻿# Copyright (c) 2026 EurekaGao. MIT License.
 [CmdletBinding()]
-param([switch]$Validate, [switch]$ValidateEntry, [switch]$ValidateAcl, [switch]$ValidateUi, [switch]$ValidateIcon, [switch]$ValidateInstance, [switch]$ValidateLibrary, [switch]$ValidateDiscovery, [switch]$ValidateUpdate)
+param([switch]$Validate, [switch]$ValidateEntry, [switch]$ValidateAcl, [switch]$ValidateUi, [switch]$ValidateIcon, [switch]$ValidateInstance, [switch]$ValidateLibrary, [switch]$ValidateDiscovery, [switch]$ValidateUpdate, [switch]$ValidateShell)
 $ErrorActionPreference = 'Stop'
 $taskRoot = Split-Path -Parent $PSScriptRoot
 $taskCompiler = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
@@ -87,4 +87,11 @@ if ($ValidateAcl) {
     & "$taskOutput\FolderSeal.Tests.exe" $taskTestParent --acl
     if ($LASTEXITCODE -ne 0) { throw '权限验证失败；请检查 artifacts/test-work 中的报告与样例。' }
 }
+if ($ValidateShell) {
+    & $taskCompiler /nologo /optimize+ /target:exe /main:ShellTests "/out:$taskOutput\FolderSeal.ShellTests.exe" @taskReferences @taskBranding $taskSource (Join-Path $taskRoot 'tests\ShellTests.cs')
+    if ($LASTEXITCODE -ne 0) { throw '右键菜单验证程序编译失败。' }
+    & "$taskOutput\FolderSeal.ShellTests.exe" $taskTestParent
+    if ($LASTEXITCODE -ne 0) { throw '右键菜单验证失败；样例保留在 artifacts/test-work 中。' }
+}
+
 Write-Output "已生成：$taskOutput\FolderSeal.exe"
