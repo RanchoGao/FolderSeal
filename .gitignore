@@ -27,7 +27,6 @@
 /releases/
 /_archive/
 /_personal/
-/软件理解复述/
 *.lnk
 /setup-test-*/
 .setup-test-*/
