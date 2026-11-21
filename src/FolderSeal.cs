@@ -298,6 +298,12 @@ namespace FolderSeal
                 if (token != IntPtr.Zero) CloseHandle(token);
             }
         }
+        // Detection only: the UI asks the user before sealing into a parent that allows removal.
+        public static bool ParentLacksProtection(string parent)
+{
+            try { return ParentAllowsDeleteChild(parent); }
+            catch (IOException) { return false; }
+        }
         public static void RequireProtectedParent(string parent)
         {
             LocalNtfs(parent);
@@ -924,7 +930,7 @@ namespace FolderSeal
             if (password.Length < 6) throw new ArgumentException("密码至少需要 6 个字符。");
             if (Directory.Exists(Root) || File.Exists(Root)) throw new IOException("请使用尚不存在的新文件夹名称。");
             Paths.NoLinks(Path.GetDirectoryName(Root));
-            if (protect) Native.RequireProtectedParent(Path.GetDirectoryName(Root));
+            if (protect) Native.LocalNtfs(Path.GetDirectoryName(Root));
             Directory.CreateDirectory(Root);
             if (protect) Permissions.Seal(Root);
             try
@@ -942,7 +948,7 @@ namespace FolderSeal
         public void Unlock(string password)
         {
             if (Open) throw new InvalidOperationException("当前文件夹已经解锁。");
-            if (protect) Native.RequireProtectedParent(Path.GetDirectoryName(Root));
+            if (protect) Native.LocalNtfs(Path.GetDirectoryName(Root));
             Acquire();
             try
             {
@@ -969,7 +975,7 @@ namespace FolderSeal
         public void Resume(string existingSession, string password)
         {
             if (Open) throw new InvalidOperationException();
-            if (protect) Native.RequireProtectedParent(Path.GetDirectoryName(Root));
+            if (protect) Native.LocalNtfs(Path.GetDirectoryName(Root));
             Paths.NoLinks(existingSession);
             if (!Paths.Inside(existingSession, sessionsBase)) throw new IOException("不是本程序的工作区。");
             existingSession = Paths.Full(existingSession);
@@ -1152,7 +1158,7 @@ namespace FolderSeal
             if (Open) throw new InvalidOperationException("请先保存并锁定。");
             if (newPassword == null || newPassword.Length < 6) throw new ArgumentException("密码至少需要 6 个字符。");
             if (!HasPendingMigration && HasUnfinishedWorkspace) throw new IOException("此目录还有未恢复的工作区，请先恢复、保存并锁定，再改密。");
-            if (protect) Native.RequireProtectedParent(Path.GetDirectoryName(Root));
+            if (protect) Native.LocalNtfs(Path.GetDirectoryName(Root));
             Acquire(true);
             try
             {
@@ -2115,6 +2121,24 @@ namespace FolderSeal
             using (PasswordDialog dialog = new PasswordDialog(creating, title, targetPath))
                 return dialog.ShowDialog(this) == DialogResult.OK ? dialog.Value : null;
         }
+        private Func<string, bool> weakParentConfirm = null;
+        private bool ConfirmWeakParent(string parent)
+{
+            return ConfirmWeakParent(parent, String.IsNullOrEmpty(parent) || Native.ParentLacksProtection(parent));
+        }
+        internal bool ConfirmWeakParent(string parent, bool weak)
+{
+            if (!weak) return true;
+            Func<string, bool> confirm = weakParentConfirm;
+            if (confirm != null) return confirm(parent);
+            return MessageBox.Show(this,
+                "这个位置无法防止整个加密文件夹被移走或删除：\r\n" + parent +
+                "\r\n\r\n所在文件夹允许普通程序删除其中的子文件夹，因此加密文件夹可能被整体拖走或放进回收站。" +
+                "\r\n\r\n加密内容仍受密码保护，被移走后也打不开；但资料会从原位置消失。" +
+                "\r\n\r\n仍要在这里加密吗？",
+                "此位置无法防删除", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2) == DialogResult.Yes;
+        }
         private async Task SealFromExplorer(string path)
         {
             try
@@ -2131,6 +2155,7 @@ namespace FolderSeal
                 { MessageBox.Show(this, "所选内容已经位于加密文件夹内：\r\n" + inside + "\r\n\r\n请直接打开该加密文件夹，不要再次加密。", "无法再次加密", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
                 if (Directory.Exists(full) && HasDirectVaultChild(full))
                 { MessageBox.Show(this, "此文件夹内已有加密文件夹。请分别处理，避免嵌套加密。", "无法加密", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
+                if (!ConfirmWeakParent(Path.GetDirectoryName(full))) return;
                 if (!await EnsureMaster(true)) return;
                 string password = masterPassword, root = null, warning = null;
                 RefreshState("正在加密：" + Path.GetFileName(full));
@@ -2159,6 +2184,7 @@ namespace FolderSeal
             string parent;
             using (FolderBrowserDialog dialog = new FolderBrowserDialog { Description = "选择加密文件夹的上级目录", SelectedPath = File.Exists(pendingSource) ? Path.GetDirectoryName(pendingSource) : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments) })
             { if (dialog.ShowDialog(this) != DialogResult.OK) return; parent = dialog.SelectedPath; }
+            if (!ConfirmWeakParent(parent)) return;
             string name;
             using (NameDialog dialog = new NameDialog()) { if (dialog.ShowDialog(this) != DialogResult.OK) return; name = dialog.FolderName; }
             string password = masterPassword;
