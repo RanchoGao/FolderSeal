@@ -2,7 +2,9 @@
 
 ## 项目
 
-FolderSeal（文件夹加密工具）：C# + Windows Forms + .NET Framework 4.7.2 实现的本地加密文件夹工具，单文件源码，目标 Windows 10/11 本机 NTFS。
+密封夹（FolderSeal）：C# + Windows Forms + .NET Framework 4.7.2 实现的本地加密文件夹工具，单文件源码，目标 Windows 10/11 本机 NTFS。
+
+中文名为“密封夹”，英文名为“FolderSeal”；对外文档统一使用“密封夹（FolderSeal）”。程序文件名、安装包名与数据路径沿用 FolderSeal。
 
 ## 目录约定
 
@@ -41,6 +43,7 @@ FolderSeal（文件夹加密工具）：C# + Windows Forms + .NET Framework 4.7.
 .\scripts\build.ps1 -ValidateInstance             # 多进程单实例与请求转交验证
 .\scripts\build.ps1 -ValidateLibrary              # 检索、加密位置记录、改密及中断恢复验证
 .\scripts\build.ps1 -ValidateDiscovery            # 测试样例/回收站排除及旧缓存清理验证
+.\scripts\build.ps1 -ValidateUpdate               # 公开版本解析、安装包筛选与下载地址验证
 .\scripts\build.ps1 -ValidateAcl                # 管理员 PowerShell：权限验证
 .\scripts\package.ps1                           # 编译并生成安装包到 artifacts/dist
 .\scripts\verify-installer.ps1                  # 管理员 PowerShell：安装与卸载验证

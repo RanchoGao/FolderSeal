@@ -44,7 +44,7 @@ namespace FolderSeal
             try
             {
                 if (args.Length > 1 && args[1] == "--acl") AclTest();
-                else { PasswordBoundary(); RoundTrip(); Tamper(); PathValidation(); FailureSafety(); CleanupRecovery(); Concurrency(); DeleteAuthentication(); HardLinkTest(); }
+                else { PasswordBoundary(); RoundTrip(); Tamper(); PathValidation(); FailureSafety(); CleanupRecovery(); WorkspaceVersionRecovery(); Concurrency(); DeleteAuthentication(); HardLinkTest(); }
                 Console.WriteLine("SUCCESS " + checks + " checks");
                 if (report != null) File.WriteAllText(report, "SUCCESS " + checks + " checks\r\n" + DateTime.Now.ToString("s"), Encoding.UTF8);
                 passed = true; return 0;
@@ -162,6 +162,16 @@ namespace FolderSeal
                 Assert(Paths.Equal(original, Paths.Hash(vault.Data)), "failed lock retains previous encrypted snapshot");
                 Assert(Directory.GetFiles(vault.Root, ".pending-*").Length == 0, "failed stage cleaned up");
                 vault.Lock();
+                vault.Unlock(Password);
+                string backup = Path.Combine(vault.Root, VaultSession.BackupName);
+                byte[] previous = Paths.Hash(backup);
+                byte[] current = Paths.Hash(vault.Data);
+                File.WriteAllText(Path.Combine(vault.Work, "editing.txt"), "new edit");
+                using (FileStream reader = new FileStream(backup, FileMode.Open, FileAccess.Read, FileShare.Read))
+                    Fails(delegate { vault.Lock(); }, "held previous snapshot prevents replacement without deleting backups");
+                Assert(vault.Open && Paths.Equal(previous, Paths.Hash(backup)) && Paths.Equal(current, Paths.Hash(vault.Data)), "failed replacement keeps both encrypted versions");
+                vault.Lock();
+                Assert(Paths.Equal(current, Paths.Hash(backup)), "success rotates the former current snapshot into the backup");
             }
             Say("failed save retains source data and existing encrypted snapshot");
         }
@@ -193,6 +203,7 @@ namespace FolderSeal
                 using (FileStream reader = new FileStream(Path.Combine(vault.Work, "z.txt"), FileMode.Open, FileAccess.Read, FileShare.Read))
                     Fails(delegate { vault.Lock(); }, "read handle can prevent plaintext cleanup");
                 Assert(vault.CleanupPending, "incomplete cleanup distinguished from incomplete save");
+                Assert(vault.Open, "pending cleanup remains operable after releasing encryption keys");
                 Assert(File.Exists(Path.Combine(savedSession, "清理状态.txt")), "cleanup recovery marker persisted");
                 Assert(!File.Exists(Path.Combine(vault.Work, "a.txt")), "test exercised partial cleanup");
                 bool importBlocked = false;
@@ -212,6 +223,55 @@ namespace FolderSeal
                 resumed.Lock();
             }
             Say("partial-cleanup failure and crash recovery preserve the full encrypted snapshot");
+        }
+        private static void WorkspaceVersionRecovery()
+        {
+            string stale, legacy;
+            using (VaultSession vault = Session("workspace-version"))
+            {
+                vault.Create(Password); vault.Lock();
+                vault.Unlock(Password);
+                File.WriteAllText(Path.Combine(vault.Work, "fixture.txt"), "recoverable edit");
+                stale = vault.SessionRoot;
+            }
+            using (VaultSession vault = Session("workspace-version"))
+            {
+                Assert(vault.RecoveryWorkspaces().SequenceEqual(new[] { stale }), "only the matching workspace is listed");
+                vault.Resume(stale, Password);
+                Assert(File.ReadAllText(Path.Combine(vault.Work, "fixture.txt")) == "recoverable edit", "matching source version can be recovered");
+                vault.Lock();
+                vault.Unlock(Password);
+                File.WriteAllText(Path.Combine(vault.Work, "fixture.txt"), "older unsaved edit");
+                stale = vault.SessionRoot;
+            }
+            using (VaultSession vault = Session("workspace-version"))
+            {
+                vault.Unlock(Password);
+                File.WriteAllText(Path.Combine(vault.Work, "fixture.txt"), "newer saved edit");
+                vault.Lock();
+                vault.Unlock(Password);
+                legacy = vault.SessionRoot;
+                string note = Path.Combine(legacy, "工作区说明.txt");
+                File.WriteAllLines(note, File.ReadAllLines(note).Where(line => !line.StartsWith("来源版本：")));
+            }
+            using (VaultSession vault = Session("workspace-version"))
+            {
+                byte[] current = Paths.Hash(vault.Data), backup = Paths.Hash(Path.Combine(vault.Root, VaultSession.BackupName));
+                Fails(delegate { vault.Resume(stale, Password); }, "older workspace cannot replace newer saved content");
+                Fails(delegate { vault.Resume(legacy, Password); }, "legacy workspace without recorded origin cannot replace a snapshot");
+                Assert(!vault.Open && Paths.Equal(Paths.Hash(vault.Data), current) && Paths.Equal(Paths.Hash(Path.Combine(vault.Root, VaultSession.BackupName)), backup), "rejected recovery leaves both encrypted versions unchanged");
+                Assert(File.ReadAllText(Path.Combine(stale, "编辑区", "fixture.txt")) == "older unsaved edit" && Directory.Exists(legacy), "rejected recovery leaves both old workspaces available for manual copy");
+                using (VaultSession other = Session("workspace-version-other"))
+                {
+                    other.Create(Password); other.Lock();
+                    Assert(!other.RecoveryWorkspaces().Any(), "unrelated vault does not list those workspaces");
+                    Fails(delegate { other.Resume(stale, Password); }, "workspace cannot be restored into another vault");
+                }
+                vault.Unlock(Password);
+                Assert(File.ReadAllText(Path.Combine(vault.Work, "fixture.txt")) == "newer saved edit", "newer saved edit remains the current version");
+                vault.Lock();
+            }
+            Say("matching recovery works; stale, legacy and unrelated workspaces are retained without overwriting");
         }
         private static void DeleteAuthentication()
         {
@@ -253,6 +313,8 @@ namespace FolderSeal
         {
             if (!Native.IsAdmin()) throw new UnauthorizedAccessException("ACL integration tests require an elevated process.");
             Native.LocalNtfs(container);
+            // Use known permissions on the generated directory regardless of the checkout's inherited ACL.
+            Permissions.Set(container, false);
             string root = Child("protected-folder"); Directory.CreateDirectory(root);
             File.WriteAllText(Path.Combine(root, "ciphertext.fixture"), "dummy ciphertext");
             Permissions.Seal(root);
@@ -281,13 +343,54 @@ namespace FolderSeal
                 using (WindowsImpersonationContext context = WindowsIdentity.Impersonate(restricted))
                 {
                     Assert(!Native.IsAdmin(), "test token has no administrator membership");
-                    Assert(File.ReadAllText(Path.Combine(root, "ciphertext.fixture")) == "dummy ciphertext", "ordinary user can back up ciphertext");
+                    Fails(delegate { Directory.GetFiles(root); }, "ordinary folder listing blocked");
+                    Fails(delegate { File.ReadAllText(Path.Combine(root, "ciphertext.fixture")); }, "ordinary ciphertext read blocked even with the exact path");
                     Fails(delegate { File.Delete(Path.Combine(root, "ciphertext.fixture")); }, "ordinary file deletion blocked");
                     Fails(delegate { File.WriteAllText(Path.Combine(root, "ciphertext.fixture"), "corrupt"); }, "ordinary overwrite blocked");
                     Fails(delegate { Directory.Delete(root, true); }, "recursive folder deletion blocked despite parent full control");
                     Fails(delegate { Directory.Move(safeRoot, Child("recycle-simulation")); }, "moving protected directory away is blocked at supported locations");
                 }
-                Assert(File.Exists(Path.Combine(root, "ciphertext.fixture")), "ciphertext survives attempted deletion");
+                Assert(File.ReadAllText(Path.Combine(root, "ciphertext.fixture")) == "dummy ciphertext", "elevated backup can read the unchanged ciphertext");
+                parentAcl.RemoveAccessRuleSpecific(new FileSystemAccessRule(WindowsIdentity.GetCurrent().User, FileSystemRights.FullControl, AccessControlType.Allow));
+                Directory.SetAccessControl(container, parentAcl);
+                Native.RequireProtectedParent(container);
+                using (VaultSession vault = new VaultSession(Child("protected-session"), Child("private-sessions"), true))
+                {
+                    vault.Create(Password);
+                    File.WriteAllText(Path.Combine(vault.Work, "fixture.txt"), "protected session roundtrip");
+                    vault.Lock();
+                    using (WindowsIdentity.Impersonate(restricted))
+                    {
+                        Fails(delegate { Directory.GetFiles(vault.Root); }, "new locked vault rejects ordinary listing");
+                        Fails(delegate { File.ReadAllBytes(vault.Data); }, "new locked vault rejects ordinary process reads");
+                        Fails(delegate { File.WriteAllText(vault.Data, "invalid editor update"); }, "new locked vault rejects ordinary writes");
+                        Fails(delegate { File.Delete(vault.Data); }, "new locked vault rejects ordinary deletion");
+                        Fails(delegate { Directory.Move(vault.Root, Child("locked-vault-moved")); }, "new locked vault rejects ordinary moves");
+                    }
+                    Permissions.Set(vault.Root, false);
+                    Permissions.Set(vault.Data, false);
+                    using (WindowsIdentity.Impersonate(restricted))
+                        Assert(File.ReadAllBytes(vault.Data).Length > 0, "legacy read permission is present in the migration fixture");
+                    vault.Unlock(Password);
+                    string workFile = Path.Combine(vault.Work, "fixture.txt");
+                    string sessionNote = Path.Combine(vault.SessionRoot, "工作区说明.txt");
+                    using (WindowsIdentity.Impersonate(restricted))
+                    {
+                        Fails(delegate { File.ReadAllBytes(vault.Data); }, "successful unlock removes the legacy ciphertext read permission");
+                        Fails(delegate { Directory.GetFiles(vault.SessionRoot); }, "ordinary editor cannot list the private session container");
+                        Fails(delegate { File.ReadAllBytes(sessionNote); }, "ordinary editor cannot read private session metadata");
+                        Assert(File.ReadAllText(workFile) == "protected session roundtrip", "ordinary editor can read the decrypted workspace");
+                        File.WriteAllText(workFile, "ordinary editor update");
+                    }
+                    vault.Lock();
+                    Assert(!File.Exists(workFile), "locking removes the decrypted workspace");
+                    vault.Unlock(Password);
+                    Assert(File.ReadAllText(Path.Combine(vault.Work, "fixture.txt")) == "ordinary editor update", "ordinary editor changes survive locking");
+                    vault.Lock();
+                    Fails(delegate { vault.Delete("incorrect-password"); }, "protected delete rejects incorrect password");
+                    vault.Delete(Password);
+                    Assert(!Directory.Exists(vault.Root), "protected folder deleted only by password-authorized operation");
+                }
             }
             finally
             {
@@ -295,21 +398,7 @@ namespace FolderSeal
                 if (token != IntPtr.Zero) CloseHandle(token);
                 Marshal.FreeHGlobal(sid);
             }
-            Say("persistent NTFS protection, ordinary deletion/overwrite and administrator boundary");
-            parentAcl.RemoveAccessRuleSpecific(new FileSystemAccessRule(WindowsIdentity.GetCurrent().User, FileSystemRights.FullControl, AccessControlType.Allow));
-            Directory.SetAccessControl(container, parentAcl);
-            Native.RequireProtectedParent(container);
-            using (VaultSession vault = new VaultSession(Child("protected-session"), Child("private-sessions"), true))
-            {
-                vault.Create(Password);
-                File.WriteAllText(Path.Combine(vault.Work, "fixture.txt"), "protected session roundtrip");
-                vault.Lock(); vault.Unlock(Password);
-                Assert(File.ReadAllText(Path.Combine(vault.Work, "fixture.txt")) == "protected session roundtrip", "protected encrypted lifecycle");
-                vault.Lock();
-                Fails(delegate { vault.Delete("incorrect-password"); }, "protected delete rejects incorrect password");
-                vault.Delete(Password);
-                Assert(!Directory.Exists(vault.Root), "protected folder deleted only by password-authorized operation");
-            }
+            Say("persistent NTFS protection blocks ordinary listing, reading, deletion, overwrite and moving");
             Say("full administrator-protected create/save/unlock/delete lifecycle");
         }
     }

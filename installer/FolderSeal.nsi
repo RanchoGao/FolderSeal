@@ -1,4 +1,4 @@
-; Copyright (c) EurekaGao. Installer contains program files only.
+﻿; Copyright (c) EurekaGao. Installer contains program files only.
 Unicode true
 RequestExecutionLevel admin
 ManifestDPIAware true
@@ -12,9 +12,9 @@ SetCompressor /SOLID lzma
 !ifndef PROJECT_ROOT
   !define PROJECT_ROOT "${__FILEDIR__}\.."
 !endif
-!define PRODUCT "文件夹加密工具"
+!define PRODUCT "密封夹"
 !define PRODUCT_ID "EurekaGao.FolderSeal"
-!define VERSION "2.4.4"
+!define VERSION "2.5.7"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_ID}"
 !define PRODUCT_MARKER "EurekaGao.FolderSeal.v1"
 
@@ -27,17 +27,17 @@ BrandingText "EurekaGao"
 VIProductVersion "${VERSION}.0"
 VIAddVersionKey /LANG=2052 "ProductName" "${PRODUCT}"
 VIAddVersionKey /LANG=2052 "CompanyName" "EurekaGao"
-VIAddVersionKey /LANG=2052 "FileDescription" "文件夹加密工具安装程序"
+VIAddVersionKey /LANG=2052 "FileDescription" "密封夹安装程序"
 VIAddVersionKey /LANG=2052 "FileVersion" "${VERSION}"
 VIAddVersionKey /LANG=2052 "LegalCopyright" "Copyright (c) EurekaGao"
 
 !define MUI_ABORTWARNING
 !define MUI_ICON "${PROJECT_ROOT}\assets\FolderSeal.ico"
 !define MUI_UNICON "${PROJECT_ROOT}\assets\FolderSeal.ico"
-!define MUI_WELCOMEPAGE_TITLE "安装文件夹加密工具"
-!define MUI_WELCOMEPAGE_TEXT "在你选择的位置创建独立的加密文件夹，通过密码访问，并限制常规删除。$\r$\n$\r$\n安装程序只安装软件和说明，不会移动、加密或删除你的任何资料。密码需要你在软件中自行设置。$\r$\n$\r$\n安装和运行软件需要管理员授权。"
+!define MUI_WELCOMEPAGE_TITLE "安装密封夹"
+!define MUI_WELCOMEPAGE_TEXT "在你选择的位置创建独立的加密文件夹，用一个密码打开所有加密文件夹，并限制常规删除。$\r$\n$\r$\n安装程序只安装软件和说明，不会移动、加密或删除你的任何资料。密码需要你在软件中自行设置。$\r$\n$\r$\n安装和运行软件需要管理员授权。"
 !define MUI_FINISHPAGE_RUN "$INSTDIR\FolderSeal.exe"
-!define MUI_FINISHPAGE_RUN_TEXT "打开文件夹加密工具"
+!define MUI_FINISHPAGE_RUN_TEXT "打开密封夹"
 !define MUI_FINISHPAGE_RUN_NOTCHECKED
 !define MUI_FINISHPAGE_SHOWREADME "$INSTDIR\使用说明.txt"
 !define MUI_FINISHPAGE_SHOWREADME_TEXT "查看使用说明"
@@ -123,6 +123,17 @@ Section "程序和开始菜单入口（必选）" MainSection
   FileWrite $0 "${PRODUCT_MARKER}"
   FileClose $0
   WriteUninstaller "$INSTDIR\Uninstall.exe"
+  ; Replace legacy product entries during upgrades; keep the desktop opt-in.
+  IfFileExists "$DESKTOP\文件夹加密工具（EurekaGao）.lnk" 0 migrate_start_menu
+  ClearErrors
+  CreateShortcut "$DESKTOP\${PRODUCT}.lnk" "$INSTDIR\FolderSeal.exe"
+  IfErrors migrate_start_menu
+  Delete "$DESKTOP\文件夹加密工具（EurekaGao）.lnk"
+  migrate_start_menu:
+  Delete "$SMPROGRAMS\EurekaGao\文件夹加密工具\文件夹加密工具.lnk"
+  Delete "$SMPROGRAMS\EurekaGao\文件夹加密工具\使用说明.lnk"
+  Delete "$SMPROGRAMS\EurekaGao\文件夹加密工具\卸载.lnk"
+  RMDir "$SMPROGRAMS\EurekaGao\文件夹加密工具"
   CreateDirectory "$SMPROGRAMS\EurekaGao\${PRODUCT}"
   CreateShortcut "$SMPROGRAMS\EurekaGao\${PRODUCT}\${PRODUCT}.lnk" "$INSTDIR\FolderSeal.exe"
   CreateShortcut "$SMPROGRAMS\EurekaGao\${PRODUCT}\使用说明.lnk" "$INSTDIR\使用说明.txt"
@@ -146,7 +157,7 @@ Section "程序和开始菜单入口（必选）" MainSection
 SectionEnd
 
 Section /o "创建桌面快捷方式" DesktopSection
-  CreateShortcut "$DESKTOP\文件夹加密工具（EurekaGao）.lnk" "$INSTDIR\FolderSeal.exe"
+  CreateShortcut "$DESKTOP\${PRODUCT}.lnk" "$INSTDIR\FolderSeal.exe"
 SectionEnd
 
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
@@ -178,6 +189,7 @@ Section "Uninstall"
   IfErrors uninstall_failed
   Delete "$INSTDIR\使用说明.txt"
   Delete "$DESKTOP\文件夹加密工具（EurekaGao）.lnk"
+  Delete "$DESKTOP\${PRODUCT}.lnk"
   Delete "$SMPROGRAMS\EurekaGao\${PRODUCT}\${PRODUCT}.lnk"
   Delete "$SMPROGRAMS\EurekaGao\${PRODUCT}\使用说明.lnk"
   Delete "$SMPROGRAMS\EurekaGao\${PRODUCT}\卸载.lnk"

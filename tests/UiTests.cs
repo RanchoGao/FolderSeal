@@ -1,4 +1,4 @@
-// Copyright (c) EurekaGao. UI regression uses generated fixtures only.
+﻿// Copyright (c) EurekaGao. UI regression uses generated fixtures only.
 using System;
 using System.Drawing;
 using System.Drawing.Imaging;
@@ -6,11 +6,14 @@ using System.IO;
 using System.Reflection;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using FolderSeal;
 
 internal static class UiTests
 {
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern int GetWindowLong(IntPtr window, int index);
     private static int checks;
     private static readonly BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
     private static object Get(object target, string name) { return target.GetType().GetField(name, Private).GetValue(target); }
@@ -31,6 +34,26 @@ internal static class UiTests
         using (Bitmap bitmap = new Bitmap(form.Width, form.Height))
         { form.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size)); bitmap.Save(Path.Combine(output, name + ".png"), ImageFormat.Png); }
     }
+    private static async Task<int> DrivePassword(MainForm owner, Func<Task> action, bool cancel)
+    {
+        int prompts = 0;
+        using (Timer timer = new Timer { Interval = 100 })
+        {
+            timer.Tick += delegate
+            {
+                PasswordDialog password = owner.OwnedForms.OfType<PasswordDialog>().FirstOrDefault(x => x.Visible);
+                if (password != null)
+                {
+                    prompts++;
+                    if (cancel) ((Button)password.CancelButton).PerformClick();
+                    else { ((TextBox)Get(password, "first")).Text = "UI-Test-Only-927!"; ((Button)password.AcceptButton).PerformClick(); }
+                }
+                VaultLibraryForm library = owner.OwnedForms.OfType<VaultLibraryForm>().FirstOrDefault(x => x.Visible);
+                if (library != null) { library.DialogResult = DialogResult.Cancel; library.Close(); }
+            };
+            timer.Start(); await action(); return prompts;
+        }
+    }
     [STAThread]
     private static int Main(string[] args)
     {
@@ -50,6 +73,17 @@ internal static class UiTests
             {
                 // No Show(): startup discovery never reads or prompts over existing personal sessions.
                 Render(form, output, "empty");
+                Check(form.Text == "密封夹" && Walk(form).OfType<Label>().Any(x => x.Text == "密封夹"), "Chinese window and sidebar show the product name");
+                Check(C(form, "updateLink").Text == "检测升级" && C(form, "updateLink").Visible && C(form, "updateLink").Enabled, "update check entry is available in sidebar");
+                Set(form, "updateLookup", new Func<Task<UpdateInfo>>(delegate { return Task.FromResult(new UpdateInfo { Version = new Version(2, 6, 0, 0), Prerelease = true }); }));
+                ((Task)typeof(MainForm).GetMethod("CheckForUpdates", Private).Invoke(form, new object[] { false })).GetAwaiter().GetResult();
+                Check(C(form, "updateLink").Text == "发现新版 2.6.0" && C(form, "updateLink").Enabled, "background update shows version link without a modal dialog");
+                Set(form, "updateLookup", new Func<Task<UpdateInfo>>(delegate { return Task.FromResult<UpdateInfo>(null); }));
+                ((Task)typeof(MainForm).GetMethod("CheckForUpdates", Private).Invoke(form, new object[] { false })).GetAwaiter().GetResult();
+                Check(C(form, "updateLink").Text == "检测升级" && Get(form, "availableUpdate") == null, "no update restores the normal entry without disturbing work");
+                Set(form, "updateLookup", new Func<Task<UpdateInfo>>(delegate { throw new IOException("Generated network failure"); }));
+                ((Task)typeof(MainForm).GetMethod("CheckForUpdates", Private).Invoke(form, new object[] { false })).GetAwaiter().GetResult();
+                Check(C(form, "updateLink").Enabled && C(form, "updateLink").Text == "检测升级" && !(bool)Get(form, "checkingUpdate"), "startup network failure silently permits retry");
                 Check(Walk(form).OfType<Button>().Count(x => x.Text.Contains("创建加密文件夹")) == 1 && C(form, "create").Visible, "only sidebar contains a create entry");
                 Check(!C(form, "identityBar").Visible && !C(form, "notice").Visible && !C(form, "unlock").Visible, "empty view hides identity and notice cards");
                 TableLayoutPanel body = (TableLayoutPanel)C(form, "body");
@@ -72,6 +106,21 @@ internal static class UiTests
                 File.WriteAllText(Path.Combine(vault.Work, "示例笔记.md"), "Generated UI fixture; no personal data.");
                 Set(form, "session", vault); Refresh(form);
                 Render(form, output, "unlocked");
+                ListView styledFiles = (ListView)C(form, "files");
+                Check(styledFiles.Items[0].ImageIndex >= 0 && styledFiles.Items[0].ToolTipText == styledFiles.Items[0].Text, "file type marker and full relative name are available");
+                Check(C(form, "notice").BackColor == Color.White && C(form, "hint").Text.Contains("双击"), "normal editing uses lightweight discovery guidance");
+                typeof(MainForm).GetMethod("RefreshState", Private).Invoke(form, new object[] { "已解锁 · 使用结束后请保存并锁定" });
+                Check(C(form, "status").Text == "", "unlock does not duplicate persistent guidance");
+                File.WriteAllText(Path.Combine(vault.Work, "additional.txt"), "Generated icon fixture");
+                File.WriteAllText(Path.Combine(vault.Work, "no-extension"), "Generated icon fixture");
+                Refresh(form); Render(form, output, "multiple-types");
+                Check(styledFiles.Items.Count == 3 && styledFiles.SmallImageList.Handle != IntPtr.Zero, "multiple image types render after source bitmap disposal");
+                File.Delete(Path.Combine(vault.Work, "additional.txt")); File.Delete(Path.Combine(vault.Work, "no-extension"));
+                Refresh(form);
+                Size originalSize = form.Size;
+                form.Size = form.MinimumSize; Render(form, output, "unlocked-minimum");
+                Check(C(form, "show").Right <= C(form, "show").Parent.ClientSize.Width && C(form, "importFiles").Left >= 0, "minimum window keeps editing actions inside toolbar");
+                form.Size = originalSize;
                 Check(form.LaunchAction(new[] { "--open-vault", vault.Root }) == "existing", "same unlocked vault reuses original workspace");
                 Check(form.LaunchAction(new[] { "--open-vault", Path.Combine(fixture, "Other vault") }) == "lock-first", "different vault request preserves unlocked session");
                 Check(form.LaunchAction(new[] { "--move-source", Path.Combine(fixture, "sample.txt") }) == "lock-first", "source request cannot replace unlocked session");
@@ -82,8 +131,20 @@ internal static class UiTests
                 Check(form.SelectedFileToOpen() == Path.Combine(vault.Work, "示例笔记.md"), "file activation resolves selected Unicode file inside editing workspace");
                 Check(C(form, "lockButton").Visible && !C(form, "unlock").Visible, "one primary action while unlocked");
                 Check(!M(form, "delete").Enabled && !M(form, "recover").Enabled, "unlocked view prevents destructive management");
-                Check(C(form, "more").Visible && !C(form, "more").Enabled, "unlocked view disables management until locked");
-                Check(C(form, "notice").Visible && !C(form, "noticeTitle").Visible && body.RowStyles[1].Height <= 42, "normal editing uses a compact reminder");
+                Check(C(form, "more").Visible && C(form, "more").Enabled, "unlocked view permits opening management menu");
+                Check(!M(form, "recover").Enabled && !M(form, "delete").Enabled && M(form, "recover").Text.Contains("需先保存并锁定") && M(form, "delete").Text.Contains("需先保存并锁定"), "unlocked menu explains disabled actions");
+                using (Form help = form.CreateHelpDialog())
+                {
+                    Render(help, output, "help-default");
+                    RichTextBox helpText = Walk(help).OfType<RichTextBox>().Single();
+                    Check(helpText.ReadOnly && helpText.WordWrap && helpText.ScrollBars == RichTextBoxScrollBars.Vertical, "help uses automatic vertical scrolling and wrapped read-only text");
+                    help.ClientSize = new Size(850, 900); Render(help, output, "help-large");
+                    Check((GetWindowLong(helpText.Handle, -16) & 0x200000) == 0, "help hides vertical scrollbar when content fits");
+                    help.Size = help.MinimumSize; Render(help, output, "help-small");
+                    Check((GetWindowLong(helpText.Handle, -16) & 0x200000) != 0, "help shows vertical scrollbar when content overflows");
+                    helpText.SelectionStart = helpText.TextLength; helpText.ScrollToCaret(); Render(help, output, "help-scrolled");
+                }
+                Check(C(form, "notice").Visible && !C(form, "noticeTitle").Visible && body.RowStyles[1].Height <= 52 && C(form, "hint").Text.Contains("同一 Windows 账户可访问"), "normal editing uses a compact reminder about plaintext");
                 Set(form, "busy", true); Refresh(form);
                 Check(form.SelectedFileToOpen() == null, "processing state cannot open a file");
                 Check(form.LaunchAction(new[] { "--open-vault", vault.Root }) == "busy", "busy work refuses new entry operations");
@@ -139,6 +200,9 @@ internal static class UiTests
                 ListView list = (ListView)Get(library, "list"); TextBox search = (TextBox)Get(library, "search");
                 Check(list.Items.Count == 2 && list.Items.Cast<ListViewItem>().Any(x => x.SubItems[2].Text == "位置不可用"), "library retains unavailable locations");
                 search.Text = "missing"; Check(list.Items.Count == 1, "library search matches paths case insensitively");
+                list.Items[0].Selected = true;
+                Check(!((Button)Get(library, "open")).Enabled && ((Button)Get(library, "path")).Enabled, "unavailable location can be inspected but not opened");
+                search.Text = "no-generated-match"; Check(list.Items.Count == 0 && ((Label)Get(library, "info")).Text.Contains("未找到匹配项"), "no search match has a distinct message");
                 search.Text = ""; library.Size = library.MinimumSize; Render(library, output, "library-minimum");
                 Check(list.Height > 100 && ((Button)Get(library, "open")).Right < ((Button)Get(library, "open")).Parent.Width, "library minimum size retains list and actions");
                 Check(list.Columns.Cast<ColumnHeader>().Sum(x => x.Width) <= list.ClientSize.Width, "all library status columns fit minimum width");
@@ -150,33 +214,82 @@ internal static class UiTests
                 {
                     timer.Stop();
                     Check(Get(library, "scanning") == null, "cached library does not start a disk scan on show");
-                    ListView list = (ListView)Get(library, "list"); list.Items[0].Selected = true;
-                    ((Button)Get(library, "open")).PerformClick();
+                    ListView list = (ListView)Get(library, "list");
+                    list.Items.Cast<ListViewItem>().Single(x => x.SubItems[2].Text == "已统一密码").Selected = true;
+                    typeof(Control).GetMethod("OnKeyDown", Private).Invoke(list, new object[] { new KeyEventArgs(Keys.Enter) });
+                    if (library.DialogResult != DialogResult.OK) library.Close();
                 };
-                timer.Start(); Check(library.ShowDialog() == DialogResult.OK && library.SelectedRoot != null, "cached library selects a location without password prompts");
+                timer.Start(); Check(library.ShowDialog() == DialogResult.OK && library.SelectedRoot != null, "Enter opens the selected available location without another password prompt");
             }
-            using (PasswordDialog password = new PasswordDialog(false, "输入总密码"))
+            using (NameDialog name = new NameDialog())
+                Check(name.CancelButton != null && ((Button)name.CancelButton).DialogResult == DialogResult.Cancel, "name dialog offers explicit keyboard cancellation");
+            Check(!PasswordDialog.HasMinimumLength(new string('a', 14)) && PasswordDialog.HasMinimumLength(new string('a', 15)), "first password setup requires 15 characters");
+            Check(!PasswordDialog.HasMinimumLength(String.Concat(Enumerable.Repeat("🔒", 14))) && PasswordDialog.HasMinimumLength(String.Concat(Enumerable.Repeat("🔒", 15))), "surrogate pairs count as one password character");
+            using (PasswordDialog deletePassword = new PasswordDialog(false, "删除前再次验证密码", requestFixture(fixture)))
+                Check(Walk(deletePassword).OfType<TextBox>().Any(x => x.ReadOnly && x.Text == requestFixture(fixture)), "deletion verification shows full target path");
+            using (PasswordDialog password = new PasswordDialog(false, "输入密码"))
             {
-                Render(password, output, "master-password");
-                Check(Walk(password).OfType<Label>().Any(x => x.Text == "输入总密码"), "master password prompt uses correct wording");
+                Render(password, output, "password");
+                Check(Walk(password).OfType<Label>().Any(x => x.Text == "输入密码"), "password prompt uses correct wording");
             }
             string state = Path.Combine(fixture, "startup-state");
             VaultCatalog startup = new VaultCatalog(Path.Combine(state, "catalog.egcatalog")); startup.Scanned = true; startup.Save("UI-Test-Only-927!");
-            using (MainForm authenticated = new MainForm(source, null, state))
+            Exception authenticationFailure = null;
+            using (MainForm authenticated = new MainForm(null, null, state))
+            {
+                authenticated.Shown += async delegate
+                {
+                    try
+                    {
+                        Check(!Application.OpenForms.OfType<PasswordDialog>().Any() && !Application.OpenForms.OfType<VaultLibraryForm>().Any(), "normal startup shows homepage without password or library");
+                        Check(Get(authenticated, "masterPassword") == null && !((VaultCatalog)Get(authenticated, "catalog")).Scanned, "startup does not decrypt catalog or begin scanning");
+                        Render(authenticated, output, "startup-homepage");
+                        Func<Task> library = delegate { return (Task)typeof(MainForm).GetMethod("ShowLibrary", Private).Invoke(authenticated, null); };
+                        Check(await DrivePassword(authenticated, library, true) == 1, "viewing library requires password and supports cancellation");
+                        Check(!authenticated.IsDisposed && Get(authenticated, "masterPassword") == null, "cancelling library authentication keeps homepage without authorization");
+                        Check(await DrivePassword(authenticated, library, false) == 1, "library accepts one password before displaying list");
+                        VaultCatalog loaded = (VaultCatalog)Get(authenticated, "catalog");
+                        Check(Get(authenticated, "masterPassword") == null && loaded.Locations.Count == 0 && !loaded.Scanned, "leaving the library releases the password and plaintext catalog");
+                        Set(authenticated, "masterPassword", "UI-Test-Only-927!");
+                        Task<bool> listOpen = (Task<bool>)typeof(MainForm).GetMethod("EnsureOpenPassword", Private).Invoke(authenticated, new object[] { true });
+                        Check(listOpen.IsCompleted && await listOpen, "opening from verified list reuses authorization without a password dialog");
+                        typeof(MainForm).GetMethod("ReleaseAuthorization", Private).Invoke(authenticated, null);
+                        Check(await DrivePassword(authenticated, library, true) == 1, "reopening the library in the same process always requires a password");
+                        Check(await DrivePassword(authenticated, delegate { return (Task)typeof(MainForm).GetMethod("EnsureOpenPassword", Private).Invoke(authenticated, new object[] { false }); }, true) == 1, "manual open requires password even after list verification");
+                        Check(await DrivePassword(authenticated, delegate { ((Button)Get(authenticated, "create")).PerformClick(); return Task.CompletedTask; }, true) == 1, "creation requires password even after list verification");
+                        Check(await DrivePassword(authenticated, delegate { return authenticated.HandleLaunch(new[] { "--open-vault", Path.Combine(fixture, "External vault") }); }, true) == 1, "forwarded Explorer entry requires password after list verification");
+                        Check(Get(authenticated, "session") == null && Get(authenticated, "masterPassword") == null, "cancelled independent operations leave no authorization and do not open a vault");
+                        using (VaultSession existing = new VaultSession(Path.Combine(fixture, "Existing entry vault"), Path.Combine(fixture, "entry-sessions"), false))
+                        {
+                            await Task.Run(delegate { existing.Create("UI-Test-Only-927!"); });
+                            Set(authenticated, "session", existing);
+                            try
+                            {
+                                Check(await DrivePassword(authenticated, delegate { return authenticated.HandleLaunch(new[] { "--open-vault", existing.Root }); }, true) == 1, "Explorer entry to an already unlocked vault still requires password");
+                                Check(existing.Open, "cancelling Explorer reauthentication preserves existing editing session");
+                            }
+                            finally { Set(authenticated, "session", null); existing.Lock(); }
+                        }
+                        Set(authenticated, "masterPassword", "UI-Test-Only-927!");
+                        Check(await DrivePassword(authenticated, library, true) == 1 && Get(authenticated, "masterPassword") == null, "an unrelated operation's password cannot authorize the library");
+                    }
+                    catch (Exception error) { authenticationFailure = error; }
+                    finally { authenticated.Close(); }
+                };
+                authenticated.ShowDialog();
+            }
+            if (authenticationFailure != null) throw authenticationFailure;
+            using (MainForm external = new MainForm(null, Path.Combine(fixture, "External vault"), state))
             using (Timer timer = new Timer { Interval = 100 })
             {
+                int prompts = 0;
                 timer.Tick += delegate
                 {
-                    PasswordDialog dialog = Application.OpenForms.OfType<PasswordDialog>().FirstOrDefault();
-                    if (dialog != null)
-                    {
-                        Check(Get(authenticated, "masterPassword") == null && Get(authenticated, "session") == null, "startup hides vault information before master authentication");
-                        ((TextBox)Get(dialog, "first")).Text = "UI-Test-Only-927!"; ((Button)dialog.AcceptButton).PerformClick();
-                    }
-                    else if (Get(authenticated, "masterPassword") != null)
-                    { timer.Stop(); Check((string)Get(authenticated, "masterPassword") == "UI-Test-Only-927!", "startup verifies generated master catalog"); authenticated.Close(); }
+                    PasswordDialog password = external.OwnedForms.OfType<PasswordDialog>().FirstOrDefault(x => x.Visible);
+                    if (password != null) { prompts++; ((Button)password.CancelButton).PerformClick(); }
+                    else if (prompts > 0) { timer.Stop(); Check(!external.IsDisposed && Get(external, "session") == null, "cancelling initial Explorer password returns to homepage"); external.Close(); }
                 };
-                timer.Start(); authenticated.ShowDialog();
+                timer.Start(); external.ShowDialog(); Check(prompts == 1, "initial Explorer entry requests one password");
             }
             passed = true; Console.WriteLine("SUCCESS " + checks + " UI checks"); return 0;
         }
