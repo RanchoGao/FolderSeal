@@ -26,17 +26,6 @@ internal static class UiTests
     {
         foreach (Control child in root.Controls) { yield return child; foreach (Control nested in Walk(child)) yield return nested; }
     }
-    private static void WeakParent(MainForm form, string parent)
-{
-        string asked = null;
-        Set(form, "weakParentConfirm", (Func<string, bool>)delegate(string path) { asked = path; return false; });
-        MethodInfo confirm = typeof(MainForm).GetMethod("ConfirmWeakParent", Private, null, new Type[] { typeof(string), typeof(bool) }, null);
-        Check((bool)confirm.Invoke(form, new object[] { parent, true }) == false && asked == parent, "unsafe parent asks for confirmation and respects refusal");
-        Set(form, "weakParentConfirm", (Func<string, bool>)delegate(string path) { return true; });
-        Check((bool)confirm.Invoke(form, new object[] { parent, true }) == true, "confirmation allows sealing in an unsafe parent");
-        Check((bool)confirm.Invoke(form, new object[] { parent, false }) == true, "safe parent skips confirmation");
-        Set(form, "weakParentConfirm", null);
-    }
     private static void Render(Form form, string output, string name)
     {
         // Mark visible for offscreen rendering without firing Form.Shown or scanning user sessions.
@@ -82,7 +71,6 @@ internal static class UiTests
                 Check(starting.LaunchAction(new[] { "--open-vault", Path.Combine(fixture, "Other vault") }) == "busy", "startup entry blocks another request before first Shown event");
             using (MainForm form = new MainForm(null, null))
             {
-                WeakParent(form, parent);
                 // No Show(): startup discovery never reads or prompts over existing personal sessions.
                 Render(form, output, "empty");
                 Check(form.Text == "密封夹" && Walk(form).OfType<Label>().Any(x => x.Text == "密封夹"), "Chinese window and sidebar show the product name");

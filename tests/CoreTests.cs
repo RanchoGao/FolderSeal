@@ -318,6 +318,8 @@ namespace FolderSeal
             string root = Child("protected-folder"); Directory.CreateDirectory(root);
             File.WriteAllText(Path.Combine(root, "ciphertext.fixture"), "dummy ciphertext");
             Permissions.Seal(root);
+            Assert(Directory.GetAccessControl(root).GetAccessRules(true, false, typeof(SecurityIdentifier)).OfType<FileSystemAccessRule>().Any(x => x.AccessControlType == AccessControlType.Deny && (x.FileSystemRights & FileSystemRights.Delete) != 0), "sealed folder denies deletion explicitly");
+            string emptyRoot = Child("protected-empty"); Directory.CreateDirectory(emptyRoot); Permissions.Seal(emptyRoot);
             Assert(!Native.ParentAllowsDeleteChild(container), "ordinary parent has no DELETE_CHILD override");
             SecurityIdentifier admin = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
             Assert(Directory.GetAccessControl(root).GetOwner(typeof(SecurityIdentifier)).Equals(admin), "folder owned by Administrators");
@@ -348,6 +350,7 @@ namespace FolderSeal
                     Fails(delegate { File.Delete(Path.Combine(root, "ciphertext.fixture")); }, "ordinary file deletion blocked");
                     Fails(delegate { File.WriteAllText(Path.Combine(root, "ciphertext.fixture"), "corrupt"); }, "ordinary overwrite blocked");
                     Fails(delegate { Directory.Delete(root, true); }, "recursive folder deletion blocked despite parent full control");
+                    Fails(delegate { Directory.Delete(emptyRoot, false); }, "empty protected folder cannot be removed even when the parent allows it");
                     Fails(delegate { Directory.Move(safeRoot, Child("recycle-simulation")); }, "moving protected directory away is blocked at supported locations");
                 }
                 Assert(File.ReadAllText(Path.Combine(root, "ciphertext.fixture")) == "dummy ciphertext", "elevated backup can read the unchanged ciphertext");
@@ -398,6 +401,9 @@ namespace FolderSeal
                 if (token != IntPtr.Zero) CloseHandle(token);
                 Marshal.FreeHGlobal(sid);
             }
+            Permissions.AllowDelete(emptyRoot); Directory.Delete(emptyRoot, false);
+            Permissions.AllowDelete(root);
+            Permissions.AllowDelete(safeRoot);
             Say("persistent NTFS protection blocks ordinary listing, reading, deletion, overwrite and moving");
             Say("full administrator-protected create/save/unlock/delete lifecycle");
         }
