@@ -2041,8 +2041,19 @@ namespace FolderSeal
             noticeTitle.Visible = detailed;
             noticeText.RowStyles[0].Height = detailed ? 26 : 0;
             hint.BackColor = notice.BackColor;
-            hint.ScrollBars = detailed ? ScrollBars.Vertical : ScrollBars.None;
+            hint.ScrollBars = detailed && HintOverflows() ? ScrollBars.Vertical : ScrollBars.None;
             hint.TabStop = detailed;
+        }
+        private bool HintOverflows()
+{
+            if (String.IsNullOrEmpty(hint.Text)) return false;
+            int width = notice.ClientSize.Width - notice.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth;
+            int height = (int)body.RowStyles[1].Height - notice.Padding.Vertical - progress.Height
+                - (noticeTitle.Visible ? (int)noticeText.RowStyles[0].Height : 0) - hint.Margin.Vertical;
+            if (width < 60 || height <= 0) return false;
+            Size measured = TextRenderer.MeasureText(hint.Text, hint.Font, new Size(width, Int32.MaxValue),
+                TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl | TextFormatFlags.NoPadding);
+            return measured.Height > height;
         }
         private int FileImage(string path)
         {

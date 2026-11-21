@@ -151,6 +151,7 @@ internal static class UiTests
                 Check(!C(form, "lockButton").Enabled && !C(form, "show").Enabled && !C(form, "choose").Enabled, "busy view disables conflicting actions");
                 Check(!C(form, "more").Enabled && !M(form, "recover").Enabled && !M(form, "delete").Enabled, "busy view disables more menu actions");
                 Check(((ListView)C(form, "files")).Items.Count == 0, "busy view removes stale file listing");
+                Check(((TextBox)C(form, "hint")).ScrollBars == ScrollBars.None, "short busy notice shows no scrollbar");
                 Render(form, output, "busy");
                 Set(form, "busy", false); Set(form, "operationFailed", true); Set(form, "lastFailure", "Generated failure example"); Refresh(form);
                 Check(C(form, "hint").Text.Contains("Generated failure example") && C(form, "lockButton").Text.Contains("重试"), "failure stays visible with retry action");
