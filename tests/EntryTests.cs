@@ -2,6 +2,8 @@ using System;
 using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using FolderSeal;
 class EntryTests {
@@ -11,18 +13,46 @@ class EntryTests {
  string root=Path.Combine(test,"中文 空格资料");
  using(var v=new VaultSession(root,Path.Combine(test,"sessions"),false)){v.Create("123456");File.WriteAllText(Path.Combine(v.Work,"sample.txt"),"fixture");v.Lock();}
  byte[] hash=Paths.Hash(Path.Combine(root,VaultSession.DataName));
- string entry=FolderEntry.Create(root,false);
+ string entry=Task.Run(delegate { return FolderEntry.Create(root,false); }).GetAwaiter().GetResult();
  object shell=Activator.CreateInstance(Type.GetTypeFromProgID("WScript.Shell"));
  object link=shell.GetType().InvokeMember("CreateShortcut",BindingFlags.InvokeMethod,null,shell,new object[]{entry});
  string target=(string)link.GetType().InvokeMember("TargetPath",BindingFlags.GetProperty,null,link,null);
  string arguments=(string)link.GetType().InvokeMember("Arguments",BindingFlags.GetProperty,null,link,null);
  string icon=(string)link.GetType().InvokeMember("IconLocation",BindingFlags.GetProperty,null,link,null);
- if(target!=Application.ExecutablePath || arguments!="--open-vault \""+root+"\"" || !icon.EndsWith(",3")) throw new Exception("Shortcut routing incorrect");
+ if(target!=Application.ExecutablePath || arguments!="--open-vault \""+root+"\"" || icon!=Application.ExecutablePath+",0") throw new Exception("Shortcut routing or brand icon incorrect: " + icon);
  Marshal.FinalReleaseComObject(link); Marshal.FinalReleaseComObject(shell);
- if((File.GetAttributes(root)&FileAttributes.Hidden)==0 || !Paths.Equal(hash,Paths.Hash(Path.Combine(root,VaultSession.DataName))))throw new Exception("Data or hidden state incorrect");
- bool refused=false;try{FolderEntry.Create(root,false);}catch(IOException){refused=true;}if(!refused)throw new Exception("Existing shortcut overwritten");
- using(var v=new VaultSession(root,Path.Combine(test,"sessions"),false)){v.Unlock("123456");if(File.ReadAllText(Path.Combine(v.Work,"sample.txt"))!="fixture")throw new Exception("Content mismatch");v.Lock();}
- Console.WriteLine("PASS: shortcut target, quoted Unicode arguments, folder icon, hidden storage, unchanged ciphertext, overwrite refusal, unlock after entry creation");
+ FileAttributes hidden = FileAttributes.Hidden | FileAttributes.System;
+ if((File.GetAttributes(root)&hidden)!=hidden || !Paths.Equal(hash,Paths.Hash(Path.Combine(root,VaultSession.DataName))))throw new Exception("Data or hidden state incorrect");
+ using (var v = new VaultSession(root, Path.Combine(test, "sessions"), false))
+ {
+     FolderEntry.Remove(root);
+     if (File.Exists(entry)) throw new Exception("Owned entry was not removed");
+     File.SetAttributes(root, File.GetAttributes(root) & ~hidden);
+     File.WriteAllText(entry, "unrelated");
+     bool refused = false;
+     try { FolderEntry.Create(root, false); } catch (IOException) { refused = true; }
+     if (!refused || File.ReadAllText(entry) != "unrelated" || (File.GetAttributes(root) & hidden) != 0)
+         throw new Exception("Collision changed the existing item or hid the vault");
+     FolderEntry.Remove(root);
+     if (!File.Exists(entry)) throw new Exception("Unrelated entry was removed");
+     File.Delete(entry);
+     bool wrongPassword = false;
+     try { v.RepairEntry("654321"); } catch (CryptographicException) { wrongPassword = true; }
+     if (!wrongPassword || File.Exists(entry) || v.Open) throw new Exception("Invalid password repaired entry");
+     if (v.RepairEntry("123456") != entry || v.RepairEntry("123456") != entry || !Paths.Equal(hash, Paths.Hash(v.Data)))
+         throw new Exception("Repair failed to create or update entry without changing ciphertext");
+     wrongPassword = false;
+     try { v.Unlock("654321"); } catch (CryptographicException) { wrongPassword = true; }
+     if (!wrongPassword || v.Open || (v.Work != null && Directory.Exists(v.Work))) throw new Exception("Invalid password unlocked vault");
+     v.Unlock("123456");
+     if (File.ReadAllText(Path.Combine(v.Work, "sample.txt")) != "fixture") throw new Exception("Content mismatch");
+     v.Lock();
+     if (v.Open || !File.Exists(entry)) throw new Exception("Locking removed the entry or left the vault unlocked");
+     v.Delete("123456");
+     FolderEntry.Remove(root);
+     if (Directory.Exists(root) || File.Exists(entry)) throw new Exception("Authenticated deletion left the vault or entry");
+ }
+ Console.WriteLine("PASS: branded shortcut, hidden vault, conflict preservation, password-gated repair and unlock, relock and shortcut removal");
  Paths.DeleteTree(test); return 0;
  }catch(Exception e){Console.Error.WriteLine(e);return 1;}
  }

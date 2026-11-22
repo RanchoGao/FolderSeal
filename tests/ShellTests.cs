@@ -103,6 +103,7 @@ internal static class ShellTests
         Assert(outcome.Root == Path.Combine(container, "季度 报表"), "file becomes a same-named folder without its extension");
         Assert(!File.Exists(source), "plaintext source deleted after sealing");
         Assert(ExplorerMenu.IsVault(outcome.Root), "vault marker written");
+        Assert(File.Exists(outcome.Root + ".lnk"), "right-click file sealing creates a vault entry");
         Assert(String.IsNullOrEmpty(outcome.Warning), "clean seal reports no warning");
         using (VaultSession vault = new VaultSession(outcome.Root, sessions, false))
         {
@@ -121,6 +122,7 @@ internal static class ShellTests
         MainForm.SealOutcome outcome = MainForm.SealPath(source, sessions, Password, false);
         Assert(outcome.Root == source, "folder is sealed in place at its original path");
         Assert(ExplorerMenu.IsVault(source), "folder became a vault");
+        Assert(File.Exists(source + ".lnk") && (File.GetAttributes(source) & FileAttributes.Hidden) != 0, "right-click folder sealing creates an entry and hides the ciphertext");
         Assert(!File.Exists(Path.Combine(source, "说明.txt")), "original plaintext files removed");
         Assert(Directory.GetDirectories(container, ".项目资料.sealing-*").Length == 0, "parking folder removed after success");
         using (VaultSession vault = new VaultSession(source, sessions, false))
@@ -143,8 +145,11 @@ internal static class ShellTests
         File.WriteAllText(first, "one", Encoding.UTF8);
         MainForm.SealOutcome one = MainForm.SealPath(first, sessions, Password, false);
         File.WriteAllText(first, "two", Encoding.UTF8);
+        string collision = Path.Combine(container, "重复 (2).lnk");
+        File.WriteAllText(collision, "unrelated");
         MainForm.SealOutcome two = MainForm.SealPath(first, sessions, Password, false);
         Assert(one.Root != two.Root && Directory.Exists(two.Root), "name collision picks a free folder name");
         Assert(one.Root == Path.Combine(container, "重复") && two.Root == Path.Combine(container, "重复 (2)"), "collision suffix increments");
+        Assert(two.Warning != null && two.Warning.Contains("我的加密文件夹") && File.ReadAllText(collision) == "unrelated" && ExplorerMenu.IsVault(two.Root), "entry conflict preserves other item and reports how to open the sealed vault");
     }
 }

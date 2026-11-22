@@ -374,6 +374,16 @@ namespace FolderSeal
                     Permissions.Set(vault.Data, false);
                     using (WindowsIdentity.Impersonate(restricted))
                         Assert(File.ReadAllBytes(vault.Data).Length > 0, "legacy read permission is present in the migration fixture");
+                    Fails(delegate { vault.RepairEntry("incorrect-password"); }, "shortcut repair requires the current vault password");
+                    using (WindowsIdentity.Impersonate(restricted))
+                        Assert(File.ReadAllBytes(vault.Data).Length > 0, "rejected repair leaves the vault access rules unchanged");
+                    string entry = vault.RepairEntry(Password);
+                    using (WindowsIdentity.Impersonate(restricted))
+                    {
+                        Assert(File.ReadAllBytes(entry).Length > 0, "ordinary Explorer can read the branded entry");
+                        Fails(delegate { Directory.GetFiles(vault.Root); }, "repair blocks ordinary folder listing");
+                        Fails(delegate { File.ReadAllBytes(vault.Data); }, "repair restores ciphertext protection without opening the vault");
+                    }
                     vault.Unlock(Password);
                     string workFile = Path.Combine(vault.Work, "fixture.txt");
                     string sessionNote = Path.Combine(vault.SessionRoot, "工作区说明.txt");
@@ -392,6 +402,8 @@ namespace FolderSeal
                     vault.Lock();
                     Fails(delegate { vault.Delete("incorrect-password"); }, "protected delete rejects incorrect password");
                     vault.Delete(Password);
+                    FolderEntry.Remove(vault.Root);
+                    Assert(!File.Exists(entry), "authorized vault removal allows its protected shortcut to be removed");
                     Assert(!Directory.Exists(vault.Root), "protected folder deleted only by password-authorized operation");
                 }
             }
