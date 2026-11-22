@@ -36,15 +36,15 @@ internal static class UiTests
     }
     private static async Task<int> DrivePassword(MainForm owner, Func<Task> action, bool cancel)
     {
-        int prompts = 0;
+        int prompts = 0; PasswordDialog handled = null;
         using (Timer timer = new Timer { Interval = 100 })
         {
             timer.Tick += delegate
             {
                 PasswordDialog password = owner.OwnedForms.OfType<PasswordDialog>().FirstOrDefault(x => x.Visible);
-                if (password != null)
+                if (password != null && password != handled)
                 {
-                    prompts++;
+                    handled = password; prompts++;
                     if (cancel) ((Button)password.CancelButton).PerformClick();
                     else { ((TextBox)Get(password, "first")).Text = "UI-Test-Only-927!"; ((Button)password.AcceptButton).PerformClick(); }
                 }
@@ -110,7 +110,15 @@ internal static class UiTests
                 Render(form, output, "unlocked");
                 ListView styledFiles = (ListView)C(form, "files");
                 Check(styledFiles.Items[0].ImageIndex >= 0 && styledFiles.Items[0].ToolTipText == styledFiles.Items[0].Text, "file type marker and full relative name are available");
-                Check(C(form, "notice").BackColor == Color.White && C(form, "hint").Text.Contains("双击"), "normal editing uses lightweight discovery guidance");
+                Check(C(form, "notice").BackColor == UiTheme.AmberBg && C(form, "hint").Text.Contains("双击"), "normal editing uses warm amber plaintext guidance");
+                Check(C(form, "pathLink").Visible && C(form, "pathLink").Text.Contains(vault.Root), "full folder path is shown and clickable in header");
+                TextBox filterBox = (TextBox)C(form, "fileFilter");
+                filterBox.Text = "示例";
+                Check(styledFiles.Items.Count == 1, "file filter matches unlocked workspace files");
+                filterBox.Text = "no-match-xyz";
+                Check(styledFiles.Items.Count == 0 && !styledFiles.Visible, "unmatched file filter shows clear empty feedback");
+                filterBox.Clear();
+                Check(styledFiles.Items.Count == 1 && styledFiles.Visible, "clearing file filter restores full file list");
                 typeof(MainForm).GetMethod("RefreshState", Private).Invoke(form, new object[] { "已解锁 · 使用结束后请保存并锁定" });
                 Check(C(form, "status").Text == "", "unlock does not duplicate persistent guidance");
                 File.WriteAllText(Path.Combine(vault.Work, "additional.txt"), "Generated icon fixture");
@@ -255,6 +263,28 @@ internal static class UiTests
             {
                 Render(password, output, "password");
                 Check(Walk(password).OfType<Label>().Any(x => x.Text == "输入密码"), "password prompt uses correct wording");
+                Check(Walk(password).OfType<Button>().Any(x => x.Text == "显示"), "password prompt offers visibility toggle");
+            }
+            using (PasswordDialog firstSetup = new PasswordDialog(true, "设置密码"))
+            {
+                Render(firstSetup, output, "password-create");
+                Check(Walk(firstSetup).OfType<Label>().Any(x => x.Text.Contains("0 / 15")), "first setup shows live character progress");
+            }
+            using (CreateVaultDialog createDialog = new CreateVaultDialog(fixture))
+            {
+                Render(createDialog, output, "create-vault");
+                Check(createDialog.KeepOpen, "merged create dialog defaults to keeping the new vault unlocked for immediate import");
+                Check(createDialog.CancelButton != null && ((Button)createDialog.CancelButton).DialogResult == DialogResult.Cancel, "merged create dialog supports keyboard cancellation");
+            }
+            using (LockConfirmDialog lockDialog = new LockConfirmDialog("保存并锁定", "请先保存并关闭正在编辑的文件", "确认后将生成新密文并清理明文。", "确认保存并锁定"))
+            {
+                Render(lockDialog, output, "lock-confirm");
+                Check(lockDialog.AcceptButton != null && lockDialog.CancelButton != null, "branded lock confirm dialog provides explicit confirm and cancel");
+            }
+            using (SettingsDialog settingsDialog = new SettingsDialog(delegate { return true; }, delegate { }))
+            {
+                Render(settingsDialog, output, "settings");
+                Check(Walk(settingsDialog).OfType<Label>().Any(x => x.Text.Contains("已启用")), "global settings dialog exposes Explorer menu status");
             }
             string state = Path.Combine(fixture, "startup-state");
             VaultCatalog startup = new VaultCatalog(Path.Combine(state, "catalog.egcatalog")); startup.Scanned = true; startup.Save("UI-Test-Only-927!");
@@ -306,11 +336,11 @@ internal static class UiTests
             using (MainForm external = new MainForm(null, Path.Combine(fixture, "External vault"), state))
             using (Timer timer = new Timer { Interval = 100 })
             {
-                int prompts = 0;
+                int prompts = 0; PasswordDialog handled = null;
                 timer.Tick += delegate
                 {
                     PasswordDialog password = external.OwnedForms.OfType<PasswordDialog>().FirstOrDefault(x => x.Visible);
-                    if (password != null) { prompts++; ((Button)password.CancelButton).PerformClick(); }
+                    if (password != null && password != handled) { handled = password; prompts++; ((Button)password.CancelButton).PerformClick(); }
                     else if (prompts > 0) { timer.Stop(); Check(!external.IsDisposed && Get(external, "session") == null, "cancelling initial Explorer password returns to homepage"); external.Close(); }
                 };
                 timer.Start(); external.ShowDialog(); Check(prompts == 1, "initial Explorer entry requests one password");
