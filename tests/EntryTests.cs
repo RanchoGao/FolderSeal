@@ -42,6 +42,14 @@ class EntryTests {
      if (v.RepairEntry("123456") != entry || v.RepairEntry("123456") != entry || !Paths.Equal(hash, Paths.Hash(v.Data)))
          throw new Exception("Repair failed to create or update entry without changing ciphertext");
      wrongPassword = false;
+     try { v.HideEntry("654321"); } catch (CryptographicException) { wrongPassword = true; }
+     if (!wrongPassword || !File.Exists(entry) || v.Open) throw new Exception("Invalid password hid entry");
+     v.HideEntry("123456");
+     if (File.Exists(entry) || (File.GetAttributes(root) & hidden) != hidden || !Paths.Equal(hash, Paths.Hash(v.Data)))
+         throw new Exception("HideEntry failed to remove shortcut and keep vault hidden");
+     if (v.RepairEntry("123456") != entry || !File.Exists(entry))
+         throw new Exception("RepairEntry failed to restore shortcut after HideEntry");
+     wrongPassword = false;
      try { v.Unlock("654321"); } catch (CryptographicException) { wrongPassword = true; }
      if (!wrongPassword || v.Open || (v.Work != null && Directory.Exists(v.Work))) throw new Exception("Invalid password unlocked vault");
      v.Unlock("123456");

@@ -14,7 +14,7 @@ SetCompressor /SOLID lzma
 !endif
 !define PRODUCT "密封夹"
 !define PRODUCT_ID "EurekaGao.FolderSeal"
-!define VERSION "2.10.0"
+!define VERSION "2.10.1"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_ID}"
 !define PRODUCT_MARKER "EurekaGao.FolderSeal.v1"
 
@@ -168,7 +168,7 @@ Section "程序和开始菜单入口（必选）" MainSection
   installed:
 SectionEnd
 
-Section /o "创建桌面快捷方式" DesktopSection
+Section "创建桌面快捷方式" DesktopSection
   CreateShortcut "$DESKTOP\${PRODUCT}.lnk" "$INSTDIR\FolderSeal.exe"
 SectionEnd
 

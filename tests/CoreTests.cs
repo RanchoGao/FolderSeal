@@ -44,7 +44,7 @@ namespace FolderSeal
             try
             {
                 if (args.Length > 1 && args[1] == "--acl") AclTest();
-                else { PasswordBoundary(); RoundTrip(); Tamper(); PathValidation(); FailureSafety(); CleanupRecovery(); WorkspaceVersionRecovery(); Concurrency(); DeleteAuthentication(); HardLinkTest(); }
+                else { PasswordBoundary(); RoundTrip(); Tamper(); PathValidation(); FailureSafety(); CleanupRecovery(); WorkspaceVersionRecovery(); Concurrency(); DeleteAuthentication(); HardLinkTest(); ImportSourceCleanupTest(); }
                 Console.WriteLine("SUCCESS " + checks + " checks");
                 if (report != null) File.WriteAllText(report, "SUCCESS " + checks + " checks\r\n" + DateTime.Now.ToString("s"), Encoding.UTF8);
                 passed = true; return 0;
@@ -301,6 +301,58 @@ namespace FolderSeal
             File.Delete(link);
             Assert(File.ReadAllText(original) == "fixture", "hard-link rejection preserves original");
             Say("hard-link safety");
+        }
+        private static void ImportSourceCleanupTest()
+        {
+            string sources = Child("import-sources");
+            Directory.CreateDirectory(sources);
+            string plainFile = Path.Combine(sources, "plain.txt");
+            File.WriteAllText(plainFile, "plain-file-content", Encoding.UTF8);
+            string plainDir = Path.Combine(sources, "plain-folder");
+            Directory.CreateDirectory(Path.Combine(plainDir, "nested"));
+            string nestedFile = Path.Combine(plainDir, "nested", "readonly.txt");
+            File.WriteAllText(nestedFile, "nested-content", Encoding.UTF8);
+            File.SetAttributes(nestedFile, FileAttributes.ReadOnly);
+            string modifiedFile = Path.Combine(sources, "modified.txt");
+            File.WriteAllText(modifiedFile, "before-change", Encoding.UTF8);
+            string removedFromWork = Path.Combine(sources, "removed-from-work.txt");
+            File.WriteAllText(removedFromWork, "keep-original-if-removed", Encoding.UTF8);
+
+            using (VaultSession vault = Session("import-cleanup"))
+            {
+                vault.Create(Password);
+                vault.ImportFile(plainFile, true);
+                vault.ImportFolder(plainDir, true);
+                vault.ImportFile(modifiedFile, true);
+                vault.ImportFile(removedFromWork, true);
+                Assert(vault.PendingSourceDeleteCount == 4, "imports track four pending original sources");
+                Assert(File.Exists(plainFile) && Directory.Exists(plainDir), "original plaintext remains until save and lock");
+
+                // Simulate external edit after import and user removing one file from workspace before locking.
+                File.WriteAllText(modifiedFile, "changed-externally", Encoding.UTF8);
+                File.Delete(Path.Combine(vault.Work, "removed-from-work.txt"));
+
+                // Simulate a failed lock due to an open writer; original plaintext must stay intact.
+                using (FileStream writer = new FileStream(Path.Combine(vault.Work, "plain.txt"), FileMode.Open, FileAccess.Write, FileShare.ReadWrite))
+                    Fails(delegate { vault.Lock(); }, "failed lock retains pending original sources");
+                Assert(File.Exists(plainFile) && Directory.Exists(plainDir), "failed lock never deletes original plaintext");
+
+                vault.Lock();
+                Assert(!File.Exists(plainFile), "imported file original plaintext permanently deleted on lock");
+                Assert(!Directory.Exists(plainDir), "imported folder original plaintext permanently deleted on lock");
+                Assert(File.Exists(modifiedFile), "externally modified original file is preserved");
+                Assert(File.Exists(removedFromWork), "file removed from workspace before lock keeps its original");
+                Assert(vault.LastSourceDeletedCount == 2, "lock reports two deleted original sources");
+                Assert(vault.LastSourceCleanupWarnings.Count == 1, "lock warns about the externally modified source");
+
+                vault.Unlock(Password);
+                Assert(File.ReadAllText(Path.Combine(vault.Work, "plain.txt"), Encoding.UTF8) == "plain-file-content", "imported file persisted in vault");
+                Assert(File.ReadAllText(Path.Combine(vault.Work, "plain-folder", "nested", "readonly.txt"), Encoding.UTF8) == "nested-content", "imported folder persisted in vault");
+                Assert(File.ReadAllText(Path.Combine(vault.Work, "modified.txt"), Encoding.UTF8) == "before-change", "vault kept snapshot captured at import time");
+                Assert(!File.Exists(Path.Combine(vault.Work, "removed-from-work.txt")), "removed file is absent from vault");
+                vault.Lock();
+            }
+            Say("imported files and folders delete unchanged original plaintext on lock and preserve modified or removed sources");
         }
         [StructLayout(LayoutKind.Sequential)] private struct SidAndAttributes { public IntPtr Sid; public uint Attributes; }
         [DllImport("advapi32.dll", SetLastError = true)]

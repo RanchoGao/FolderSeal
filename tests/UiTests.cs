@@ -14,6 +14,29 @@ internal static class UiTests
 {
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern int GetWindowLong(IntPtr window, int index);
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr GlobalAlloc(uint uFlags, UIntPtr dwBytes);
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr GlobalLock(IntPtr hMem);
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GlobalUnlock(IntPtr hMem);
+    private static IntPtr CreateHDrop(params string[] paths)
+    {
+        byte[] text = System.Text.Encoding.Unicode.GetBytes(String.Join("\0", paths) + "\0\0");
+        int headerSize = 20;
+        IntPtr hGlobal = GlobalAlloc(0x0042, (UIntPtr)(headerSize + text.Length));
+        IntPtr ptr = GlobalLock(hGlobal);
+        try
+        {
+            System.Runtime.InteropServices.Marshal.WriteInt32(ptr, 0, headerSize);
+            System.Runtime.InteropServices.Marshal.WriteInt32(ptr, 16, 1);
+            System.Runtime.InteropServices.Marshal.Copy(text, 0, IntPtr.Add(ptr, headerSize), text.Length);
+        }
+        finally { GlobalUnlock(hGlobal); }
+        return hGlobal;
+    }
     private static int checks;
     private static readonly BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
     private static object Get(object target, string name) { return target.GetType().GetField(name, Private).GetValue(target); }
@@ -73,6 +96,8 @@ internal static class UiTests
             {
                 // No Show(): startup discovery never reads or prompts over existing personal sessions.
                 Render(form, output, "empty");
+                Check(!form.AllowDrop && Walk(form).All(c => !c.AllowDrop), "no control uses OLE AllowDrop so UIPI WM_DROPFILES works when elevated");
+                Check(form.CanAcceptFileDrop() && Native.IsFileDropEnabled(form.Handle), "homepage enables WM_DROPFILES drag-and-drop");
                 Check(form.Text == "密封夹" && Walk(form).OfType<Label>().Any(x => x.Text == "密封夹"), "Chinese window and sidebar show the product name");
                 Check(C(form, "updateLink").Text == "检测升级" && C(form, "updateLink").Visible && C(form, "updateLink").Enabled, "update check entry is available in sidebar");
                 Set(form, "updateLookup", new Func<Task<UpdateInfo>>(delegate { return Task.FromResult(new UpdateInfo { Version = new Version(2, 6, 0, 0), Prerelease = true }); }));
@@ -107,6 +132,15 @@ internal static class UiTests
                 vault.Create("UI-Test-Only-927!");
                 File.WriteAllText(Path.Combine(vault.Work, "示例笔记.md"), "Generated UI fixture; no personal data.");
                 Set(form, "session", vault); Refresh(form);
+                Check(form.CanAcceptFileDrop() && Native.IsFileDropEnabled(form.Handle), "unlocked view enables WM_DROPFILES drag-and-drop");
+                string dropFixture = Path.Combine(fixture, "拖入测试.txt");
+                File.WriteAllText(dropFixture, "wm-dropfiles-fixture");
+                IntPtr hDrop = CreateHDrop(dropFixture);
+                SendMessage(form.Handle, Native.WM_DROPFILES, hDrop, IntPtr.Zero);
+                for (int i = 0; i < 40 && !File.Exists(Path.Combine(vault.Work, "拖入测试.txt")); i++) { Application.DoEvents(); System.Threading.Thread.Sleep(25); }
+                Check(File.Exists(Path.Combine(vault.Work, "拖入测试.txt")) && vault.PendingSourceDeleteCount == 1, "WM_DROPFILES imports dropped Unicode file and tracks original for deletion on lock");
+                File.Delete(Path.Combine(vault.Work, "拖入测试.txt"));
+                Refresh(form);
                 Render(form, output, "unlocked");
                 ListView styledFiles = (ListView)C(form, "files");
                 Check(styledFiles.Items[0].ImageIndex >= 0 && styledFiles.Items[0].ToolTipText == styledFiles.Items[0].Text, "file type marker and full relative name are available");
@@ -156,6 +190,7 @@ internal static class UiTests
                 }
                 Check(C(form, "notice").Visible && !C(form, "noticeTitle").Visible && body.RowStyles[1].Height <= 52 && C(form, "hint").Text.Contains("同一 Windows 账户可访问"), "normal editing uses a compact reminder about plaintext");
                 Set(form, "busy", true); Refresh(form);
+                Check(!form.CanAcceptFileDrop() && !Native.IsFileDropEnabled(form.Handle), "busy state disables WM_DROPFILES drag-and-drop");
                 Check(form.SelectedFileToOpen() == null, "processing state cannot open a file");
                 Check(form.LaunchAction(new[] { "--open-vault", vault.Root }) == "busy", "busy work refuses new entry operations");
                 Check(!C(form, "lockButton").Enabled && !C(form, "show").Enabled && !C(form, "library").Enabled, "busy view disables conflicting actions");
@@ -174,11 +209,13 @@ internal static class UiTests
                 typeof(VaultSession).GetProperty("CleanupPending").GetSetMethod(true).Invoke(vault, new object[] { true });
                 Refresh(form);
                 Check(!C(form, "show").Enabled && !C(form, "importFiles").Enabled && !C(form, "importFolder").Enabled, "cleanup pending prevents editing and imports");
+                Check(!form.CanAcceptFileDrop() && !Native.IsFileDropEnabled(form.Handle), "cleanup pending disables WM_DROPFILES drag-and-drop");
                 Check(form.LaunchAction(new[] { "--open-vault", vault.Root }) == "lock-first", "cleanup pending cannot reopen workspace through entry");
                 Check(C(form, "lockButton").Text == "重试清理并锁定" && !C(form, "count").Visible, "cleanup pending has explicit retry and hides file count");
                 Render(form, output, "cleanup");
                 typeof(VaultSession).GetProperty("CleanupPending").GetSetMethod(true).Invoke(vault, new object[] { false });
                 Set(form, "operationFailed", false); Set(form, "lastFailure", null); vault.Lock(); Refresh(form);
+                Check(!form.CanAcceptFileDrop() && !Native.IsFileDropEnabled(form.Handle), "locked view disables WM_DROPFILES drag-and-drop");
                 Check(C(form, "unlock").Visible && !C(form, "lockButton").Visible && C(form, "create").Enabled, "locked view restores unlock and switching");
                 Check(!C(form, "files").Visible && !C(form, "count").Visible && ((ListView)C(form, "files")).Items.Count == 0, "locked view removes file names and counts");
                 Check(M(form, "delete").Enabled && M(form, "recover").Enabled, "locked view enables authenticated management");
@@ -186,7 +223,7 @@ internal static class UiTests
                 Check(form.SelectedFileToOpen() == null, "locked state cannot open a file");
                 Check(C(form, "vaultName").AccessibleDescription == vault.Root, "full folder path remains accessible without a path row");
                 ContextMenuStrip menu = (ContextMenuStrip)Get(form, "moreMenu");
-                Check(menu.Items.Count == 5 && menu.Items[0] == M(form, "recover") && menu.Items[1] == M(form, "repairEntry") && M(form, "repairEntry").Enabled && menu.Items[2] == M(form, "explorerMenu") && menu.Items[3] is ToolStripSeparator && menu.Items[4] == M(form, "delete"), "locked vault offers password-gated shortcut repair");
+                Check(menu.Items.Count == 6 && menu.Items[0] == M(form, "recover") && menu.Items[1] == M(form, "repairEntry") && M(form, "repairEntry").Enabled && menu.Items[2] == M(form, "hideEntry") && M(form, "hideEntry").Enabled && menu.Items[3] == M(form, "explorerMenu") && menu.Items[4] is ToolStripSeparator && menu.Items[5] == M(form, "delete"), "locked vault offers password-gated shortcut repair and hide");
                 Render(form, output, "locked");
                 form.Size = form.MinimumSize; Render(form, output, "minimum-size");
                 Check(C(form, "unlock").Width > 120 && C(form, "files").Height >= 100, "minimum window retains usable primary action and file area");
@@ -270,10 +307,10 @@ internal static class UiTests
                 Render(firstSetup, output, "password-create");
                 Check(Walk(firstSetup).OfType<Label>().Any(x => x.Text.Contains("0 / 15")), "first setup shows live character progress");
             }
-            using (CreateVaultDialog createDialog = new CreateVaultDialog(fixture))
+            using (CreateVaultDialog createDialog = new CreateVaultDialog(fixture, null, true))
             {
                 Render(createDialog, output, "create-vault");
-                Check(createDialog.KeepOpen, "merged create dialog defaults to keeping the new vault unlocked for immediate import");
+                Check(createDialog.KeepOpen && createDialog.HideEntry, "merged create dialog defaults to keeping the new vault unlocked and honors default hide-entry setting");
                 Check(createDialog.CancelButton != null && ((Button)createDialog.CancelButton).DialogResult == DialogResult.Cancel, "merged create dialog supports keyboard cancellation");
             }
             using (LockConfirmDialog lockDialog = new LockConfirmDialog("保存并锁定", "请先保存并关闭正在编辑的文件", "确认后将生成新密文并清理明文。", "确认保存并锁定"))
@@ -281,10 +318,20 @@ internal static class UiTests
                 Render(lockDialog, output, "lock-confirm");
                 Check(lockDialog.AcceptButton != null && lockDialog.CancelButton != null, "branded lock confirm dialog provides explicit confirm and cancel");
             }
-            using (SettingsDialog settingsDialog = new SettingsDialog(delegate { return true; }, delegate { }))
+            using (AppDialog infoDialog = new AppDialog("操作未完成", "编辑区中已有同名文件：示例.txt\r\n明文工作区仍保留。", MessageBoxButtons.OK, AppDialogTone.Warning, false))
+            {
+                Render(infoDialog, output, "app-dialog-warning");
+                Check(infoDialog.AcceptButton != null && infoDialog.CancelButton != null && Walk(infoDialog).OfType<TextBox>().Any(x => x.ReadOnly && x.Text.Contains("示例.txt")), "unified branded dialog renders warning with selectable copyable text");
+            }
+            using (AppDialog dangerDialog = new AppDialog("删除加密文件夹", "将永久删除以下加密文件夹，此操作不进入回收站。", MessageBoxButtons.YesNo, AppDialogTone.Danger, true))
+            {
+                Render(dangerDialog, output, "app-dialog-danger");
+                Check(dangerDialog.AcceptButton == dangerDialog.CancelButton && dangerDialog.CancelButton != null, "danger confirm dialog defaults keyboard Enter to cancel");
+            }
+            using (SettingsDialog settingsDialog = new SettingsDialog(delegate { return true; }, delegate { }, delegate { return true; }, delegate { }))
             {
                 Render(settingsDialog, output, "settings");
-                Check(Walk(settingsDialog).OfType<Label>().Any(x => x.Text.Contains("已启用")), "global settings dialog exposes Explorer menu status");
+                Check(Walk(settingsDialog).OfType<Label>().Any(x => x.Text.Contains("已启用")) && Walk(settingsDialog).OfType<Label>().Any(x => x.Text.Contains("已开启")), "global settings dialog exposes Explorer menu and hide-entry status");
             }
             string state = Path.Combine(fixture, "startup-state");
             VaultCatalog startup = new VaultCatalog(Path.Combine(state, "catalog.egcatalog")); startup.Scanned = true; startup.Save("UI-Test-Only-927!");
