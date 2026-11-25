@@ -185,13 +185,119 @@ internal static class LibraryTests
             Directory.Delete(workspace); Check(!s.HasUnfinishedWorkspace, "unrelated or cleaned sessions do not block migration");
         }
     }
+    private static void PasswordRotationTests()
+    {
+        string sessions = Path.Combine(root, "rotation-sessions");
+        string p1 = "RotateOld-111!", p2 = "RotateNew-222!", p3 = "RotateNext-333!", other = "OtherVault-999!";
+
+        // 1. Empty catalog rotation
+        string emptyCatalogPath = Path.Combine(root, "rotation-empty.egcatalog");
+        VaultCatalog emptyCatalog = new VaultCatalog(emptyCatalogPath, true);
+        emptyCatalog.Save(p1);
+        PasswordRotationResult emptyRes = PasswordRotation.Execute(emptyCatalog, sessions, p1, p2, false);
+        Check(emptyRes.CatalogUpdated && emptyRes.Updated.Count == 0 && emptyRes.Failed.Count == 0, "empty catalog rotates cleanly");
+        VaultCatalog verifyEmpty = new VaultCatalog(emptyCatalogPath, true);
+        Fails(delegate { verifyEmpty.Load(p1); }, "empty catalog rejects old password after rotation");
+        verifyEmpty.Load(p2);
+        Check(true, "empty catalog opens with new password after rotation");
+
+        // 2. Mixed scenario: two active vaults, one offline vault, one different-password vault, one orphan-workspace vault
+        string v1 = Path.Combine(root, "rot-v1"), v2 = Path.Combine(root, "rot-v2"), vOther = Path.Combine(root, "rot-other"), vOrphan = Path.Combine(root, "rot-orphan");
+        string vOffline = Path.Combine(root, "rot-offline-missing");
+        foreach (Tuple<string, string, string> item in new[] { Tuple.Create(v1, p1, "v1-data"), Tuple.Create(v2, p1, "v2-data"), Tuple.Create(vOther, other, "other-data"), Tuple.Create(vOrphan, p1, "orphan-data") })
+        {
+            using (VaultSession s = new VaultSession(item.Item1, sessions, false))
+            {
+                s.Create(item.Item2);
+                File.WriteAllText(Path.Combine(s.Work, "note.txt"), item.Item3 + "-r1");
+                s.Lock();
+                s.Unlock(item.Item2);
+                File.WriteAllText(Path.Combine(s.Work, "note.txt"), item.Item3 + "-r2");
+                s.Lock();
+            }
+        }
+        string orphanWork = Path.Combine(sessions, "orphan-marker");
+        Directory.CreateDirectory(orphanWork);
+        File.WriteAllText(Path.Combine(orphanWork, "工作区说明.txt"), vOrphan + "\r\nfixture");
+
+        string mixedCatalogPath = Path.Combine(root, "rotation-mixed.egcatalog");
+        VaultCatalog mixed = new VaultCatalog(mixedCatalogPath, true);
+        mixed.Add(v1, true); mixed.Add(v2, true); mixed.Add(vOffline, true); mixed.Add(vOther, false); mixed.Add(vOrphan, true);
+        mixed.Save(p1);
+
+        int progressEvents = 0;
+        PasswordRotationResult mixedRes = PasswordRotation.Execute(mixed, sessions, p1, p2, false, delegate { progressEvents++; });
+        Check(mixedRes.CatalogUpdated && mixedRes.Updated.Count == 2 && mixedRes.Offline.Count == 1 && mixedRes.Skipped.Count == 2 && mixedRes.Failed.Count == 0 && progressEvents == 2,
+            "mixed rotation updates active vaults and classifies offline/skipped vaults");
+
+        VaultCatalog reloaded = new VaultCatalog(mixedCatalogPath, true);
+        Fails(delegate { reloaded.Load(p1); }, "mixed catalog rejects old password after rotation");
+        reloaded.Load(p2);
+        Check(reloaded.Locations.First(x => x.Path == Paths.Full(v1)).Managed && reloaded.Locations.First(x => x.Path == Paths.Full(v2)).Managed,
+            "updated vaults remain marked managed");
+        Check(!reloaded.Locations.First(x => x.Path == Paths.Full(vOffline)).Managed &&
+              !reloaded.Locations.First(x => x.Path == Paths.Full(vOther)).Managed &&
+              !reloaded.Locations.First(x => x.Path == Paths.Full(vOrphan)).Managed,
+            "offline, different-password and orphan vaults are marked unmanaged for later enrollment");
+        using (VaultSession check1 = new VaultSession(v1, sessions, false))
+        {
+            Fails(delegate { check1.AcceptsPassword(p1); }, "rotated vault rejects old password");
+            Check(check1.AcceptsPassword(p2), "rotated vault accepts new password");
+            check1.Unlock(p2);
+            Check(File.ReadAllText(Path.Combine(check1.Work, "note.txt")) == "v1-data-r2", "rotated vault preserves content");
+            check1.Lock();
+        }
+        using (VaultSession checkOther = new VaultSession(vOther, sessions, false))
+            Check(checkOther.AcceptsPassword(other), "different-password vault remains untouched");
+        using (VaultSession checkOrphan = new VaultSession(vOrphan, sessions, false))
+            Check(checkOrphan.AcceptsPassword(p1), "orphan-workspace vault remains untouched with old password");
+        Paths.DeleteTree(orphanWork);
+
+        // 3. Zero-success failure keeps catalog on old password
+        string failFirstPath = Path.Combine(root, "rotation-fail-first.egcatalog");
+        VaultCatalog failFirst = new VaultCatalog(failFirstPath, true);
+        failFirst.Add(v1, true);
+        failFirst.Save(p2);
+        PasswordRotationResult failFirstRes = PasswordRotation.Execute(failFirst, sessions, p2, p3, false, null,
+            delegate { throw new IOException("simulated first vault failure"); });
+        Check(!failFirstRes.CatalogUpdated && failFirstRes.Updated.Count == 0 && failFirstRes.Failed.Count == 1,
+            "zero-success rotation leaves catalog unchanged");
+        VaultCatalog verifyFailFirst = new VaultCatalog(failFirstPath, true);
+        verifyFailFirst.Load(p2);
+        Fails(delegate { verifyFailFirst.Load(p3); }, "catalog stays on previous password when no vault succeeded");
+
+        // 4. Partial failure after first success switches catalog to new password and marks failed vault unmanaged
+        string partialPath = Path.Combine(root, "rotation-partial.egcatalog");
+        VaultCatalog partial = new VaultCatalog(partialPath, true);
+        partial.Add(v1, true); partial.Add(v2, true);
+        partial.Save(p2);
+        PasswordRotationResult partialRes = PasswordRotation.Execute(partial, sessions, p2, p3, false, null,
+            delegate(string path) { if (String.Equals(path, Paths.Full(v2), StringComparison.OrdinalIgnoreCase)) throw new IOException("simulated second vault busy"); });
+        Check(partialRes.CatalogUpdated && partialRes.Updated.Count == 1 && partialRes.Failed.Count == 1,
+            "partial rotation records succeeded and failed vaults");
+        VaultCatalog verifyPartial = new VaultCatalog(partialPath, true);
+        verifyPartial.Load(p3);
+        Check(verifyPartial.Locations.First(x => x.Path == Paths.Full(v1)).Managed && !verifyPartial.Locations.First(x => x.Path == Paths.Full(v2)).Managed,
+            "partial rotation marks succeeded vault managed and failed vault unmanaged");
+        using (VaultSession check2 = new VaultSession(v2, sessions, false))
+        {
+            Check(check2.AcceptsPassword(p2), "failed vault retains previous password intact");
+            Fails(delegate { check2.AcceptsPassword(p3); }, "failed vault does not accept new password");
+        }
+    }
     [STAThread]
     private static int Main(string[] args)
     {
-        if (args.Length != 1 || !Directory.Exists(args[0])) return 2;
+        if (args.Length < 1 || !Directory.Exists(args[0])) return 2;
+        bool rotationOnly = args.Length > 1 && args[1] == "--rotation";
         root = Path.Combine(Path.GetFullPath(args[0]), "generated-library-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(root);
         bool passed = false;
-        try { Catalog(); Create("original"); Discovery(); Migration(); OrphanProtection(); passed = true; Console.WriteLine("SUCCESS " + checks + " library checks"); return 0; }
+        try
+        {
+            if (rotationOnly) PasswordRotationTests();
+            else { Catalog(); Create("original"); Discovery(); Migration(); OrphanProtection(); PasswordRotationTests(); }
+            passed = true; Console.WriteLine("SUCCESS " + checks + " library checks"); return 0;
+        }
         catch (Exception error) { Console.Error.WriteLine(error); Console.Error.WriteLine("Generated fixtures retained: " + root); return 1; }
         finally
         {

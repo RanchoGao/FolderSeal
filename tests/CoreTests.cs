@@ -371,6 +371,9 @@ namespace FolderSeal
             File.WriteAllText(Path.Combine(root, "ciphertext.fixture"), "dummy ciphertext");
             Permissions.Seal(root);
             Assert(Directory.GetAccessControl(root).GetAccessRules(true, false, typeof(SecurityIdentifier)).OfType<FileSystemAccessRule>().Any(x => x.AccessControlType == AccessControlType.Deny && (x.FileSystemRights & FileSystemRights.Delete) != 0), "sealed folder denies deletion explicitly");
+            Fails(delegate { Directory.Delete(root, true); }, "elevated process cannot directly delete sealed folder");
+            Fails(delegate { File.Delete(Path.Combine(root, "ciphertext.fixture")); }, "elevated process cannot directly delete sealed ciphertext");
+            Fails(delegate { Directory.Move(root, Child("elevated-moved-root")); }, "elevated process cannot directly move sealed folder");
             string emptyRoot = Child("protected-empty"); Directory.CreateDirectory(emptyRoot); Permissions.Seal(emptyRoot);
             Assert(!Native.ParentAllowsDeleteChild(container), "ordinary parent has no DELETE_CHILD override");
             SecurityIdentifier admin = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
@@ -430,9 +433,13 @@ namespace FolderSeal
                     using (WindowsIdentity.Impersonate(restricted))
                         Assert(File.ReadAllBytes(vault.Data).Length > 0, "rejected repair leaves the vault access rules unchanged");
                     string entry = vault.RepairEntry(Password);
+                    Fails(delegate { File.Delete(entry); }, "elevated process cannot directly delete protected shortcut");
+                    Fails(delegate { File.Move(entry, Child("elevated-moved-entry.lnk")); }, "elevated process cannot directly move protected shortcut");
                     using (WindowsIdentity.Impersonate(restricted))
                     {
                         Assert(File.ReadAllBytes(entry).Length > 0, "ordinary Explorer can read the branded entry");
+                        Fails(delegate { File.Delete(entry); }, "ordinary process cannot delete protected shortcut");
+                        Fails(delegate { File.Move(entry, Child("ordinary-moved-entry.lnk")); }, "ordinary process cannot move protected shortcut");
                         Fails(delegate { Directory.GetFiles(vault.Root); }, "repair blocks ordinary folder listing");
                         Fails(delegate { File.ReadAllBytes(vault.Data); }, "repair restores ciphertext protection without opening the vault");
                     }
@@ -449,9 +456,16 @@ namespace FolderSeal
                     }
                     vault.Lock();
                     Assert(!File.Exists(workFile), "locking removes the decrypted workspace");
+                    vault.ChangePassword(Password, "RotatedPassword8");
+                    vault.ChangePassword("RotatedPassword8", Password);
+                    Fails(delegate { Directory.Delete(vault.Root, true); }, "sealed vault still blocks direct elevated deletion after password change");
                     vault.Unlock(Password);
                     Assert(File.ReadAllText(Path.Combine(vault.Work, "fixture.txt")) == "ordinary editor update", "ordinary editor changes survive locking");
                     vault.Lock();
+                    vault.HideEntry(Password);
+                    Assert(!File.Exists(entry), "password-authorized hide removes the protected shortcut");
+                    entry = vault.RepairEntry(Password);
+                    Fails(delegate { File.Delete(entry); }, "recreated shortcut restores elevated delete protection");
                     Fails(delegate { vault.Delete("incorrect-password"); }, "protected delete rejects incorrect password");
                     vault.Delete(Password);
                     FolderEntry.Remove(vault.Root);

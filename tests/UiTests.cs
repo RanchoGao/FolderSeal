@@ -292,8 +292,8 @@ internal static class UiTests
             }
             using (NameDialog name = new NameDialog())
                 Check(name.CancelButton != null && ((Button)name.CancelButton).DialogResult == DialogResult.Cancel, "name dialog offers explicit keyboard cancellation");
-            Check(!PasswordDialog.HasMinimumLength(new string('a', 14)) && PasswordDialog.HasMinimumLength(new string('a', 15)), "first password setup requires 15 characters");
-            Check(!PasswordDialog.HasMinimumLength(String.Concat(Enumerable.Repeat("🔒", 14))) && PasswordDialog.HasMinimumLength(String.Concat(Enumerable.Repeat("🔒", 15))), "surrogate pairs count as one password character");
+            Check(!PasswordDialog.HasMinimumLength(new string('a', 7)) && PasswordDialog.HasMinimumLength(new string('a', 8)), "first password setup requires 8 characters");
+            Check(!PasswordDialog.HasMinimumLength(String.Concat(Enumerable.Repeat("🔒", 7))) && PasswordDialog.HasMinimumLength(String.Concat(Enumerable.Repeat("🔒", 8))), "surrogate pairs count as one password character");
             using (PasswordDialog deletePassword = new PasswordDialog(false, "删除前再次验证密码", requestFixture(fixture)))
                 Check(Walk(deletePassword).OfType<TextBox>().Any(x => x.ReadOnly && x.Text == requestFixture(fixture)), "deletion verification shows full target path");
             using (PasswordDialog password = new PasswordDialog(false, "输入密码"))
@@ -305,7 +305,7 @@ internal static class UiTests
             using (PasswordDialog firstSetup = new PasswordDialog(true, "设置密码"))
             {
                 Render(firstSetup, output, "password-create");
-                Check(Walk(firstSetup).OfType<Label>().Any(x => x.Text.Contains("0 / 15")), "first setup shows live character progress");
+                Check(Walk(firstSetup).OfType<Label>().Any(x => x.Text.Contains("0 / 8")), "first setup shows live character progress");
             }
             using (CreateVaultDialog createDialog = new CreateVaultDialog(fixture, null, true))
             {
@@ -328,10 +328,13 @@ internal static class UiTests
                 Render(dangerDialog, output, "app-dialog-danger");
                 Check(dangerDialog.AcceptButton == dangerDialog.CancelButton && dangerDialog.CancelButton != null, "danger confirm dialog defaults keyboard Enter to cancel");
             }
-            using (SettingsDialog settingsDialog = new SettingsDialog(delegate { return true; }, delegate { }, delegate { return true; }, delegate { }))
+            using (SettingsDialog settingsDialog = new SettingsDialog(delegate { return true; }, delegate { }, delegate { return true; }, delegate { }, delegate { return true; }, delegate { return "状态：已启用"; }))
             {
                 Render(settingsDialog, output, "settings");
                 Check(Walk(settingsDialog).OfType<Label>().Any(x => x.Text.Contains("已启用")) && Walk(settingsDialog).OfType<Label>().Any(x => x.Text.Contains("已开启")), "global settings dialog exposes Explorer menu and hide-entry status");
+                Check(Walk(settingsDialog).OfType<Button>().Any(x => x.Text == "修改密码…" && x.Enabled), "global settings dialog enables change-password action when vault is locked");
+                using (SettingsDialog lockedSettings = new SettingsDialog(delegate { return false; }, delegate { }, delegate { return false; }, delegate { }, delegate { return false; }, delegate { return "请先保存并锁定"; }))
+                    Check(Walk(lockedSettings).OfType<Button>().Any(x => x.Text == "修改密码…" && !x.Enabled) && Walk(lockedSettings).OfType<Label>().Any(x => x.Text.Contains("请先保存并锁定")), "global settings dialog disables change-password action when vault is unlocked or uninitialized");
             }
             string state = Path.Combine(fixture, "startup-state");
             VaultCatalog startup = new VaultCatalog(Path.Combine(state, "catalog.egcatalog")); startup.Scanned = true; startup.Save("UI-Test-Only-927!");

@@ -455,23 +455,50 @@ namespace FolderSeal
             }
         }
         public static void Seal(string root)
-{
+        {
             DenyDeletion(root);
-            foreach (string file in Directory.GetFiles(root)) Restrict(file);
+            foreach (string file in Directory.GetFiles(root)) RestrictNoDelete(file);
         }
-        // An explicit deny on the folder itself stops delete, rename and move even when the parent allows removal.
+        // An explicit deny on both User and Administrators stops accidental delete, rename and move even when elevated or when the parent allows removal.
         private static void DenyDeletion(string path)
-{
+        {
             if (!Native.IsAdmin()) throw new UnauthorizedAccessException("锁定目录的保护需要管理员权限。");
+            Paths.NoLinks(path);
             DirectorySecurity acl = (DirectorySecurity)BuildAccessControl(true, null, true);
-            acl.AddAccessRule(new FileSystemAccessRule(User, FileSystemRights.Delete, InheritanceFlags.None, PropagationFlags.None, AccessControlType.Deny));
+            FileSystemRights deny = FileSystemRights.Delete | FileSystemRights.DeleteSubdirectoriesAndFiles;
+            acl.AddAccessRule(new FileSystemAccessRule(User, deny, InheritanceFlags.None, PropagationFlags.None, AccessControlType.Deny));
+            acl.AddAccessRule(new FileSystemAccessRule(Admin, deny, InheritanceFlags.None, PropagationFlags.None, AccessControlType.Deny));
             Directory.SetAccessControl(path, acl);
         }
-        // Called only after the password check, so removal requires the program and the password.
+        private static void RestrictNoDelete(string path)
+        {
+            if (!Native.IsAdmin()) throw new UnauthorizedAccessException("锁定目录的保护需要管理员权限。");
+            Paths.NoLinks(path);
+            FileSecurity acl = (FileSecurity)BuildAccessControl(false, null, true);
+            acl.AddAccessRule(new FileSystemAccessRule(User, FileSystemRights.Delete, InheritanceFlags.None, PropagationFlags.None, AccessControlType.Deny));
+            acl.AddAccessRule(new FileSystemAccessRule(Admin, FileSystemRights.Delete, InheritanceFlags.None, PropagationFlags.None, AccessControlType.Deny));
+            File.SetAccessControl(path, acl);
+        }
+        // Allows Explorer to render and open the branded shortcut while blocking ordinary and accidental elevated deletion/renaming.
+        internal static void ProtectEntry(string path)
+        {
+            if (!Native.IsAdmin()) throw new UnauthorizedAccessException("快捷入口保护需要管理员权限。");
+            Paths.NoLinks(path);
+            FileSecurity acl = (FileSecurity)BuildAccessControl(false, FileSystemRights.ReadAndExecute, false);
+            acl.AddAccessRule(new FileSystemAccessRule(User, FileSystemRights.Delete, InheritanceFlags.None, PropagationFlags.None, AccessControlType.Deny));
+            acl.AddAccessRule(new FileSystemAccessRule(Admin, FileSystemRights.Delete, InheritanceFlags.None, PropagationFlags.None, AccessControlType.Deny));
+            File.SetAccessControl(path, acl);
+        }
+        // Temporarily lifts the explicit deny-delete rules while keeping ordinary user access restricted.
         public static void AllowDelete(string path)
-{
-            if (!Native.IsAdmin()) throw new UnauthorizedAccessException("删除受保护目录需要管理员权限。");
-            Apply(path, null);
+        {
+            if (!Native.IsAdmin()) throw new UnauthorizedAccessException("解除受保护项目的删除限制需要管理员权限。");
+            if (Directory.Exists(path))
+            {
+                Apply(path, null);
+                foreach (string file in Directory.GetFiles(path)) Restrict(file);
+            }
+            else if (File.Exists(path)) Apply(path, null);
         }
     }
 
@@ -857,6 +884,117 @@ namespace FolderSeal
         }
     }
 
+    internal sealed class PasswordRotationResult
+    {
+        public bool CatalogUpdated;
+        public readonly List<string> Updated = new List<string>();
+        public readonly List<string> Offline = new List<string>();
+        public readonly List<string> Skipped = new List<string>();
+        public readonly List<string> Failed = new List<string>();
+    }
+
+    internal static class PasswordRotation
+    {
+        public static PasswordRotationResult Execute(
+            VaultCatalog catalog,
+            string sessionsBase,
+            string oldPassword,
+            string newPassword,
+            bool protect = true,
+            Action<int, int, string> onProgress = null,
+            Action<string> beforeVaultChange = null)
+        {
+            if (catalog == null) throw new ArgumentNullException("catalog");
+            if (String.IsNullOrEmpty(oldPassword)) throw new ArgumentException("原密码不能为空。");
+            if (String.IsNullOrEmpty(newPassword) || !PasswordDialog.HasMinimumLength(newPassword))
+                throw new ArgumentException("新密码至少需要 " + PasswordDialog.NewPasswordMinimum + " 个字符。");
+            if (oldPassword == newPassword) throw new ArgumentException("新密码不能与当前密码相同。");
+
+            PasswordRotationResult result = new PasswordRotationResult();
+            List<VaultLocation> targets = new List<VaultLocation>();
+
+            foreach (VaultLocation item in catalog.Locations)
+            {
+                string dataFile = Path.Combine(item.Path, VaultSession.DataName);
+                if (!Directory.Exists(item.Path) || !File.Exists(dataFile))
+                {
+                    result.Offline.Add(item.Path);
+                    continue;
+                }
+                using (VaultSession probe = new VaultSession(item.Path, sessionsBase, protect))
+                {
+                    if (probe.HasPendingMigration)
+                    {
+                        result.Skipped.Add(item.Path + "（存在未完成的改密事务，请先打开该目录完成恢复）");
+                        continue;
+                    }
+                    if (probe.HasUnfinishedWorkspace)
+                    {
+                        result.Skipped.Add(item.Path + "（存在未恢复的明文工作区，请先恢复并锁定）");
+                        continue;
+                    }
+                    bool acceptsOld = false;
+                    try { acceptsOld = probe.AcceptsPassword(oldPassword); }
+                    catch (Exception) { acceptsOld = false; }
+                    if (!acceptsOld)
+                    {
+                        result.Skipped.Add(item.Path + "（未使用当前密码，保持待接入）");
+                        continue;
+                    }
+                }
+                targets.Add(item);
+            }
+
+            if (targets.Count == 0)
+            {
+                foreach (VaultLocation item in catalog.Locations) item.Managed = false;
+                catalog.Save(newPassword);
+                result.CatalogUpdated = true;
+                return result;
+            }
+
+            int total = targets.Count;
+            for (int i = 0; i < total; i++)
+            {
+                VaultLocation target = targets[i];
+                string name = new DirectoryInfo(target.Path).Name;
+                if (onProgress != null) onProgress(i + 1, total, name);
+                try
+                {
+                    if (beforeVaultChange != null) beforeVaultChange(target.Path);
+                    using (VaultSession vault = new VaultSession(target.Path, sessionsBase, protect))
+                    {
+                        vault.ChangePassword(oldPassword, newPassword);
+                    }
+                    result.Updated.Add(target.Path);
+                    if (!result.CatalogUpdated)
+                    {
+                        foreach (VaultLocation item in catalog.Locations) item.Managed = false;
+                        target.Managed = true;
+                        catalog.Save(newPassword);
+                        result.CatalogUpdated = true;
+                    }
+                    else
+                    {
+                        target.Managed = true;
+                        catalog.Save(newPassword);
+                    }
+                }
+                catch (Exception error)
+                {
+                    result.Failed.Add(target.Path + "（" + error.Message + "）");
+                    if (result.CatalogUpdated)
+                    {
+                        target.Managed = false;
+                        try { catalog.Save(newPassword); } catch (Exception) { }
+                    }
+                }
+            }
+
+            return result;
+        }
+    }
+
     internal sealed class ScanProgress
     {
         public string Found, Current;
@@ -1065,7 +1203,11 @@ namespace FolderSeal
                 if (protect) Permissions.Workspace(Work, true);
                 if (!Paths.Equal(Paths.Hash(Data), baseline))
                     throw new IOException("打开期间加密版本已改变，请重试。");
-                if (protect) Permissions.Seal(Root);
+                if (protect)
+                {
+                    Permissions.Seal(Root);
+                    FolderEntry.ProtectIfPresent(Root);
+                }
             }
             catch
             {
@@ -1130,6 +1272,7 @@ namespace FolderSeal
                 ArchiveCrypto.Verify(verify, stamps);
                 ArchiveCrypto.CheckWorkspace(Work, stamps);
                 File.Delete(verify);
+                if (protect) Permissions.AllowDelete(Root);
                 if (File.Exists(Data))
                 {
                     string backup = Path.Combine(Root, BackupName);
@@ -1137,12 +1280,15 @@ namespace FolderSeal
                 }
                 else File.Move(stage, Data);
                 baseline = Paths.Hash(Data);
-                if (protect) Permissions.Seal(Root);
             }
             finally
             {
                 if (File.Exists(verify)) File.Delete(verify);
                 if (File.Exists(stage)) File.Delete(stage);
+                if (protect && Directory.Exists(Root))
+                {
+                    try { Permissions.Seal(Root); FolderEntry.ProtectIfPresent(Root); } catch (Exception) { }
+                }
             }
         }
         public void Lock()
@@ -1285,7 +1431,11 @@ namespace FolderSeal
             try
             {
                 AcceptsPassword(password);
-                if (protect) Permissions.Seal(Root);
+                if (protect)
+                {
+                    Permissions.Seal(Root);
+                    FolderEntry.ProtectIfPresent(Root);
+                }
                 return FolderEntry.Create(Root, protect);
             }
             finally { Dispose(); }
@@ -1297,7 +1447,11 @@ namespace FolderSeal
             try
             {
                 AcceptsPassword(password);
-                if (protect) Permissions.Seal(Root);
+                if (protect)
+                {
+                    Permissions.Seal(Root);
+                    FolderEntry.ProtectIfPresent(Root);
+                }
                 FolderEntry.Hide(Root);
             }
             finally { Dispose(); }
@@ -1401,7 +1555,7 @@ namespace FolderSeal
                     foreach (RekeyEntry e in entries)
                     {
                         if (File.Exists(e.Old(Root))) throw new IOException("发现无事务记录的原快照副本，请保留目录并检查，未覆盖数据。");
-                        if (File.Exists(e.Stage(Root))) File.Delete(e.Stage(Root));
+                        if (File.Exists(e.Stage(Root))) { if (protect) Permissions.AllowDelete(Root); File.Delete(e.Stage(Root)); }
                         Rewrap(Path.Combine(Root, e.Name), e.Stage(Root), oldPassword, newPassword);
                         e.After = Paths.Hash(e.Stage(Root));
                         if (checkpoint != null) checkpoint("staged");
@@ -1415,9 +1569,10 @@ namespace FolderSeal
                         }
                         SecretRecord.Write(journal, m.ToArray(), newPassword);
                     }
-                    if (protect) Permissions.Seal(Root);
+                    if (protect) Permissions.AllowDelete(Root);
                     if (checkpoint != null) checkpoint("prepared");
                 }
+                if (protect) Permissions.AllowDelete(Root);
                 // Hashes make roll-forward idempotent after a crash at any replacement boundary.
                 foreach (RekeyEntry e in entries)
                 {
@@ -1432,7 +1587,6 @@ namespace FolderSeal
                     using (KeySet k = new KeySet(newPassword, h.Salt, h.Iterations)) ArchiveCrypto.Authenticate(target, k);
                     if (checkpoint != null) checkpoint(e.Name == DataName ? "current" : "backup");
                 }
-                if (protect) Permissions.Seal(Root);
                 if (checkpoint != null) checkpoint("cleanup");
                 foreach (RekeyEntry e in entries)
                 {
@@ -1445,7 +1599,11 @@ namespace FolderSeal
                 }
                 File.Delete(journal);
             }
-            finally { Dispose(); }
+            finally
+            {
+                if (protect && Directory.Exists(Root)) { try { Permissions.Seal(Root); FolderEntry.ProtectIfPresent(Root); } catch (Exception) { } }
+                Dispose();
+            }
         }
         public void ImportFile(string source, bool deleteSourceOnLock = false)
         {
@@ -1961,7 +2119,7 @@ namespace FolderSeal
 
     internal sealed class PasswordDialog : Form
     {
-        internal const int NewPasswordMinimum = 15;
+        internal const int NewPasswordMinimum = 8;
         internal static int CharacterCount(string password)
         {
             if (String.IsNullOrEmpty(password)) return 0;
@@ -2525,25 +2683,36 @@ namespace FolderSeal
     {
         private readonly Label stateLabel = new Label { AutoSize = true, Font = new Font("Microsoft YaHei UI", 9.5f, FontStyle.Bold) };
         private readonly Label hideEntryStateLabel = new Label { AutoSize = true, Font = new Font("Microsoft YaHei UI", 9.5f, FontStyle.Bold) };
-        private readonly ActionButton toggleBtn, hideEntryBtn;
+        private readonly Label passwordStateLabel = new Label { AutoSize = true, Font = new Font("Microsoft YaHei UI", 9.5f, FontStyle.Bold) };
+        private readonly ActionButton toggleBtn, hideEntryBtn, changePasswordBtn;
         private readonly Action onToggle, onToggleHideEntry;
-        private readonly Func<bool> checkInstalled, checkHideEntry;
+        private readonly Func<bool> checkInstalled, checkHideEntry, canChangePassword;
+        private readonly Func<string> passwordStateHint;
+        public bool ChangePasswordRequested { get; private set; }
 
-        public SettingsDialog(Func<bool> checkInstalled, Action onToggle, Func<bool> checkHideEntry = null, Action onToggleHideEntry = null)
+        public SettingsDialog(
+            Func<bool> checkInstalled,
+            Action onToggle,
+            Func<bool> checkHideEntry = null,
+            Action onToggleHideEntry = null,
+            Func<bool> canChangePassword = null,
+            Func<string> passwordStateHint = null)
         {
             this.checkInstalled = checkInstalled; this.onToggle = onToggle;
             this.checkHideEntry = checkHideEntry ?? delegate { return false; };
             this.onToggleHideEntry = onToggleHideEntry ?? delegate { };
+            this.canChangePassword = canChangePassword ?? delegate { return false; };
+            this.passwordStateHint = passwordStateHint ?? delegate { return "状态：尚未设置密码"; };
             UiTheme.StyleDialog(this, "右键菜单与设置 · 密封夹");
             FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false; MinimizeBox = false;
-            ClientSize = new Size(560, 412);
+            ClientSize = new Size(560, 544);
 
             TableLayoutPanel root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Margin = Padding.Empty };
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 62));
 
-            TableLayoutPanel body = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(22, 18, 22, 10), ColumnCount = 1, RowCount = 3 };
+            TableLayoutPanel body = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(22, 18, 22, 10), ColumnCount = 1, RowCount = 4 };
             body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
             NoticeCard menuCard = new NoticeCard { Dock = DockStyle.Top, Height = 104, BackColor = Color.White, CardBorder = UiTheme.Line, AccentBar = UiTheme.Primary, Padding = new Padding(14, 12, 14, 10), Margin = new Padding(0, 0, 0, 12) };
@@ -2574,12 +2743,26 @@ namespace FolderSeal
             hideCard.Controls.Add(hideLayout);
             body.Controls.Add(hideCard, 0, 1);
 
+            NoticeCard passwordCard = new NoticeCard { Dock = DockStyle.Top, Height = 120, BackColor = Color.White, CardBorder = UiTheme.Line, AccentBar = UiTheme.Primary, Padding = new Padding(14, 12, 14, 10), Margin = new Padding(0, 0, 0, 12) };
+            TableLayoutPanel passwordLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2 };
+            passwordLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            passwordLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 134));
+            passwordLayout.Controls.Add(new Label { Text = "修改统一密码", AutoSize = true, Font = new Font("Microsoft YaHei UI", 10f, FontStyle.Bold), ForeColor = UiTheme.Ink }, 0, 0);
+            passwordLayout.Controls.Add(new Label { Text = "验证原密码后，将目录表与本机已知加密文件夹批量改用新密码（至少 " + PasswordDialog.NewPasswordMinimum + " 个字符）；离线目录在下次打开时输原密码统一。", Dock = DockStyle.Fill, ForeColor = UiTheme.Muted, Font = new Font("Microsoft YaHei UI", 8.5f), Margin = new Padding(0, 4, 8, 0) }, 0, 1);
+            changePasswordBtn = UiTheme.CreateButton("修改密码…", delegate { ChangePasswordRequested = true; DialogResult = DialogResult.OK; }, ButtonTone.Secondary, 124, 34);
+            changePasswordBtn.Dock = DockStyle.Top; changePasswordBtn.Margin = new Padding(4, 2, 0, 0);
+            passwordLayout.Controls.Add(changePasswordBtn, 1, 0);
+            passwordStateLabel.Margin = new Padding(6, 8, 0, 0);
+            passwordLayout.Controls.Add(passwordStateLabel, 1, 1);
+            passwordCard.Controls.Add(passwordLayout);
+            body.Controls.Add(passwordCard, 0, 2);
+
             NoticeCard infoCard = new NoticeCard { Dock = DockStyle.Top, Height = 76, BackColor = UiTheme.Surface, CardBorder = UiTheme.LineSoft, AccentBar = UiTheme.Muted2, Padding = new Padding(14, 10, 14, 10) };
             TableLayoutPanel infoLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
             infoLayout.Controls.Add(new Label { Text = "当前程序版本与位置（v" + UpdateChecker.CurrentVersion.ToString(3) + "）", AutoSize = true, Font = new Font("Microsoft YaHei UI", 9.5f, FontStyle.Bold), ForeColor = UiTheme.Ink }, 0, 0);
             infoLayout.Controls.Add(new TextBox { Text = Application.ExecutablePath, ReadOnly = true, BorderStyle = BorderStyle.None, BackColor = UiTheme.Surface, ForeColor = UiTheme.Muted, Dock = DockStyle.Top, Font = new Font("Microsoft YaHei UI", 8.5f), Margin = new Padding(0, 4, 0, 0) }, 0, 1);
             infoCard.Controls.Add(infoLayout);
-            body.Controls.Add(infoCard, 0, 2);
+            body.Controls.Add(infoCard, 0, 3);
 
             Panel footer = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.Surface, Padding = new Padding(22, 8, 22, 12) };
             footer.Paint += delegate(object s, PaintEventArgs e) { using (Pen pen = new Pen(UiTheme.LineSoft)) e.Graphics.DrawLine(pen, 0, 0, footer.Width, 0); };
@@ -2605,6 +2788,11 @@ namespace FolderSeal
             hideEntryStateLabel.ForeColor = hidden ? UiTheme.Primary : UiTheme.Muted;
             hideEntryBtn.Text = hidden ? "关闭隐藏入口" : "开启隐藏入口";
             hideEntryBtn.Tone = hidden ? ButtonTone.Secondary : ButtonTone.Primary;
+
+            bool canChange = canChangePassword();
+            changePasswordBtn.Enabled = canChange;
+            passwordStateLabel.Text = passwordStateHint();
+            passwordStateLabel.ForeColor = canChange ? UiTheme.Primary : UiTheme.Muted;
         }
     }
 
@@ -2738,10 +2926,20 @@ namespace FolderSeal
                 {
                     Paths.NoLinks(entry);
                     if (!Matches(shell, entry, arguments)) throw new IOException("同名入口在创建期间发生变化，未覆盖。");
-                    File.Replace(stage, entry, null, false);
-                    if (protect) Permissions.Set(entry, false);
+                    if (protect) Permissions.AllowDelete(entry);
+                    try { File.Replace(stage, entry, null, false); }
+                    catch
+                    {
+                        if (protect && File.Exists(entry)) { try { Permissions.ProtectEntry(entry); } catch (Exception) { } }
+                        throw;
+                    }
+                    if (protect) Permissions.ProtectEntry(entry);
                 }
-                else File.Move(stage, entry);
+                else
+                {
+                    File.Move(stage, entry);
+                    if (protect) Permissions.ProtectEntry(entry);
+                }
                 File.SetAttributes(root, File.GetAttributes(root) | FileAttributes.Hidden | FileAttributes.System);
                 NotifyShell(0x00000800, root); // SHCNE_ATTRIBUTES
                 NotifyShell(replace ? 0x00002000u : 0x00000002u, entry); // SHCNE_UPDATEITEM or SHCNE_CREATE
@@ -2753,6 +2951,24 @@ namespace FolderSeal
                 Marshal.FinalReleaseComObject(shell);
                 if (File.Exists(stage)) File.Delete(stage);
             }
+        }
+        public static void ProtectIfPresent(string root)
+        {
+            if (!Native.IsAdmin()) return;
+            try
+            {
+                root = Paths.Full(root);
+                string entry = root + ".lnk";
+                if (!File.Exists(entry)) return;
+                Paths.NoLinks(entry);
+                object shell = Activator.CreateInstance(Type.GetTypeFromProgID("WScript.Shell"));
+                try
+                {
+                    if (Matches(shell, entry, Arguments(root))) Permissions.ProtectEntry(entry);
+                }
+                finally { Marshal.FinalReleaseComObject(shell); }
+            }
+            catch (Exception) { }
         }
         public static void Hide(string root)
         {
@@ -2772,6 +2988,7 @@ namespace FolderSeal
             try
             {
                 if (!Matches(shell, entry, Arguments(root))) return;
+                if (Native.IsAdmin()) Permissions.AllowDelete(entry);
                 File.Delete(entry);
                 NotifyShell(0x00000004, entry); // SHCNE_DELETE
             }
@@ -3622,8 +3839,9 @@ namespace FolderSeal
             }
             finally { ReleaseAuthorization(); }
         }
-        private void OpenSettingsDialog()
+        private async void OpenSettingsDialog()
         {
+            bool requestChangePassword = false;
             using (SettingsDialog dialog = new SettingsDialog(
                 delegate { try { return ExplorerMenu.Installed(ExplorerMenu.ClassesRoot); } catch (Exception) { return false; } },
                 delegate { ToggleExplorerMenu(this, EventArgs.Empty); },
@@ -3635,9 +3853,126 @@ namespace FolderSeal
                     status.Text = appSettings.HideFolderEntry
                         ? "已开启隐藏入口：后续新建或原地加密将隐藏原位置入口，仅从“我的加密文件夹”查看。"
                         : "已关闭隐藏入口：后续新建或原地加密将在原位置生成密封夹图标。";
+                },
+                delegate { return !busy && (session == null || !session.Open) && File.Exists(catalog.FilePath); },
+                delegate
+                {
+                    if (session != null && session.Open) return "请先保存并锁定";
+                    if (!File.Exists(catalog.FilePath)) return "状态：尚未设置";
+                    return "状态：已启用";
                 }))
             {
                 dialog.ShowDialog(this);
+                requestChangePassword = dialog.ChangePasswordRequested;
+            }
+            if (requestChangePassword) await ChangeMasterPassword();
+        }
+        private async Task ChangeMasterPassword()
+        {
+            if (busy) return;
+            if (session != null && session.Open)
+            {
+                AppDialog.Show(this, "请先保存并锁定当前加密文件夹，再修改密码。", "请先锁定", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            if (!File.Exists(catalog.FilePath))
+            {
+                AppDialog.Show(this, "当前尚未设置密码。创建第一个加密文件夹或打开“我的加密文件夹”时会引导你设置初始密码。", "尚未设置密码", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            string oldPassword = null, newPassword = null;
+            try
+            {
+                Func<string, string> verifyOld = delegate(string supplied)
+                {
+                    try
+                    {
+                        catalog.Load(supplied);
+                        return null;
+                    }
+                    catch (Exception)
+                    {
+                        return "当前密码错误，请重新输入。";
+                    }
+                };
+                using (PasswordDialog oldDialog = new PasswordDialog(false, "验证当前密码", null, verifyOld))
+                {
+                    if (oldDialog.ShowDialog(this) != DialogResult.OK) return;
+                    oldPassword = oldDialog.Value;
+                }
+
+                Func<string, string> verifyNew = delegate(string supplied)
+                {
+                    if (supplied == oldPassword) return "新密码不能与当前密码相同，请输入新的密码。";
+                    return null;
+                };
+                using (PasswordDialog newDialog = new PasswordDialog(true, "设置新密码", null, verifyNew))
+                {
+                    if (newDialog.ShowDialog(this) != DialogResult.OK) return;
+                    newPassword = newDialog.Value;
+                }
+
+                int totalKnown = catalog.Locations.Count;
+                int availableCount = catalog.Locations.Count(x => Directory.Exists(x.Path) && File.Exists(Path.Combine(x.Path, VaultSession.DataName)));
+                int offlineCount = totalKnown - availableCount;
+                string summaryText = "将把目录表密码改用新密码，并对本机已记住且当前可访问的加密文件夹执行密文流改密（不产生临时明文文件）。\r\n\r\n" +
+                    "• 已记住加密文件夹：" + totalKnown + " 个（当前可访问 " + availableCount + " 个" + (offlineCount > 0 ? "，离线/不可用 " + offlineCount + " 个" : "") + "）\r\n" +
+                    (!catalog.Scanned ? "• 提示：当前尚未全盘扫描，未记录的加密文件夹仍保留原密码，后续打开时输入原密码即可自动统一。\r\n" : "") +
+                    "• 离线目录与外部备份副本不会自动改密；完成后原密码对已更新的目录立即失效。\r\n\r\n确定现在修改密码吗？";
+                if (AppDialog.Show(this, summaryText, "确认修改密码", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.OK)
+                    return;
+
+                PasswordRotationResult rotation = null;
+                bool ok = await Run(delegate
+                {
+                    rotation = PasswordRotation.Execute(
+                        catalog,
+                        sessionsBase,
+                        oldPassword,
+                        newPassword,
+                        true,
+                        delegate(int current, int total, string name)
+                        {
+                            try
+                            {
+                                BeginInvoke((Action)delegate { status.Text = "正在修改密码（" + current + " / " + total + "）：" + name + "…"; });
+                            }
+                            catch (Exception) { }
+                        });
+                    if (!rotation.CatalogUpdated)
+                        return "密码未更改：未能更新任何加密文件夹，原密码仍有效";
+                    return "密码已修改 · 已更新 " + rotation.Updated.Count + " 个加密文件夹";
+                });
+                if (!ok || rotation == null) return;
+
+                List<string> lines = new List<string>();
+                if (!rotation.CatalogUpdated)
+                {
+                    lines.Add("未能完成密码修改，目录表与原密码均未改变。");
+                }
+                else
+                {
+                    lines.Add("统一密码已更新，后续请使用新密码访问密封夹。");
+                    lines.Add("已更新加密文件夹：" + rotation.Updated.Count + " 个");
+                }
+                if (rotation.Offline.Count > 0)
+                    lines.Add("离线/不可用（已标为待接入，后续打开时输原密码自动统一）：" + rotation.Offline.Count + " 个\r\n  " + String.Join("\r\n  ", rotation.Offline));
+                if (rotation.Skipped.Count > 0)
+                    lines.Add("已跳过（保持原密码与待接入状态）：" + rotation.Skipped.Count + " 个\r\n  " + String.Join("\r\n  ", rotation.Skipped));
+                if (rotation.Failed.Count > 0)
+                    lines.Add("改密失败（原数据已保留，仍使用原密码）：" + rotation.Failed.Count + " 个\r\n  " + String.Join("\r\n  ", rotation.Failed));
+                lines.Add("注意：外部备份副本不会自动改密，请单独妥善保管新密码。");
+
+                bool hasWarning = !rotation.CatalogUpdated || rotation.Failed.Count > 0 || rotation.Skipped.Count > 0;
+                AppDialog.Show(this, String.Join("\r\n\r\n", lines), rotation.CatalogUpdated ? "修改密码完成" : "修改密码未完成",
+                    MessageBoxButtons.OK, hasWarning ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
+            }
+            finally
+            {
+                oldPassword = null;
+                newPassword = null;
+                ReleaseAuthorization();
             }
         }
         private void ToggleExplorerMenu(object sender, EventArgs e)
@@ -4347,7 +4682,7 @@ namespace FolderSeal
             catch
             {
                 session.Dispose();
-                try { if (Directory.Exists(root)) Paths.DeleteTree(root); } catch (Exception) { }
+                try { if (Directory.Exists(root)) { if (protect) Permissions.AllowDelete(root); Paths.DeleteTree(root); } } catch (Exception) { }
                 throw;
             }
             session.Dispose();
@@ -4378,7 +4713,7 @@ namespace FolderSeal
             {
                 session.Dispose();
                 bool cleared = false;
-                try { if (Directory.Exists(directory)) Paths.DeleteTree(directory); cleared = true; } catch (Exception) { }
+                try { if (Directory.Exists(directory)) { if (protect) Permissions.AllowDelete(directory); Paths.DeleteTree(directory); } cleared = true; } catch (Exception) { }
                 if (!cleared) throw new IOException("加密未完成，原文件夹已保留在：" + parked + "\r\n原位置存在未清理的加密目录：" + directory, error);
                 try { Directory.Move(parked, directory); }
                 catch (Exception restore) { throw new IOException("加密未完成，原文件夹在：" + parked + "\r\n恢复到原位置失败：" + restore.Message, error); }
