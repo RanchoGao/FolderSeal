@@ -442,6 +442,25 @@ internal static class UiTests
                 };
                 timer.Start(); external.ShowDialog(); Check(prompts == 1, "initial Explorer entry requests one password");
             }
+            UpdateInfo sampleUpdate = new UpdateInfo
+            {
+                Version = new Version(2, 13, 0, 0),
+                FileName = "FolderSeal-2.13.0-Setup.exe",
+                DownloadUrl = "https://github.com/RanchoGao/FolderSeal/releases/download/v2.13.0/FolderSeal-2.13.0-Setup.exe",
+                ExpectedSize = 512000
+            };
+            using (UpdateProgressDialog progressDialog = new UpdateProgressDialog(sampleUpdate, delegate { return Task.FromResult(""); }))
+            {
+                IntPtr handle = progressDialog.Handle;
+                progressDialog.ApplyProgress(new UpdateDownloadProgress { Stage = "正在下载安装包…", BytesReceived = 256000, TotalBytes = 512000, Percent = 50 });
+                ProgressBar bar = (ProgressBar)Get(progressDialog, "progressBar");
+                Label detail = (Label)Get(progressDialog, "detailLabel");
+                Check(bar.Style == ProgressBarStyle.Continuous && bar.Value == 50 && detail.Text.Contains("50%"), "update progress dialog displays deterministic percentage and bytes");
+                Render(progressDialog, output, "update-progress-downloading");
+                progressDialog.ApplyFailure("测试网络中断");
+                Check(((Control)Get(progressDialog, "retryBtn")).Visible && ((Control)Get(progressDialog, "browserBtn")).Visible && detail.Text.Contains("测试网络中断"), "update failure shows retry and browser fallback actions");
+                Render(progressDialog, output, "update-progress-failure");
+            }
             passed = true; Console.WriteLine("SUCCESS " + checks + " UI checks"); return 0;
         }
         catch (Exception error) { Console.Error.WriteLine(error); return 1; }

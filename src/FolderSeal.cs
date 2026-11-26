@@ -27,7 +27,18 @@ namespace FolderSeal
     {
         public Version Version;
         public string DownloadUrl;
+        public string FileName;
+        public long ExpectedSize;
+        public string ChecksumUrl;
         public bool Prerelease;
+    }
+
+    internal sealed class UpdateDownloadProgress
+    {
+        public string Stage;
+        public long BytesReceived;
+        public long TotalBytes;
+        public int Percent;
     }
 
     internal static class UpdateChecker
@@ -64,9 +75,23 @@ namespace FolderSeal
                 version = new Version(version.Major, version.Minor, version.Build, 0);
                 if (version <= current || (newest != null && version <= newest.Version)) continue;
                 string name = "FolderSeal-" + number + "-Setup.exe";
-                string expected = "https://github.com/RanchoGao/FolderSeal/releases/download/" + Uri.EscapeDataString(release.Tag) + "/" + name;
+                string releasePrefix = "https://github.com/RanchoGao/FolderSeal/releases/download/" + Uri.EscapeDataString(release.Tag) + "/";
+                string expected = releasePrefix + name;
                 Asset installer = release.Assets.FirstOrDefault(x => x != null && x.Name == name && x.Size > 0 && x.State == "uploaded" && x.Url == expected);
-                if (installer != null) newest = new UpdateInfo { Version = version, DownloadUrl = expected, Prerelease = release.Prerelease };
+                if (installer != null)
+                {
+                    string checksumExpected = releasePrefix + "SHA256SUMS.txt";
+                    Asset checksum = release.Assets.FirstOrDefault(x => x != null && x.Name == "SHA256SUMS.txt" && x.Size > 0 && x.Size <= 1024 * 1024 && x.State == "uploaded" && x.Url == checksumExpected);
+                    newest = new UpdateInfo
+                    {
+                        Version = version,
+                        DownloadUrl = expected,
+                        FileName = name,
+                        ExpectedSize = installer.Size,
+                        ChecksumUrl = checksum != null ? checksumExpected : null,
+                        Prerelease = release.Prerelease
+                    };
+                }
             }
             return newest;
         }
@@ -96,6 +121,304 @@ namespace FolderSeal
                     return Parse(buffer, CurrentVersion);
                 }
             });
+        }
+    }
+
+    internal static class UpdateInstaller
+    {
+        internal const string ProductMarkerFile = ".folderseal-product";
+        internal const string ProductMarkerValue = "EurekaGao.FolderSeal.v1";
+        private const int MaximumRedirects = 5;
+        private const long MaximumInstallerBytes = 100L * 1024 * 1024;
+        private const long MaximumChecksumBytes = 1024L * 1024;
+
+        internal static bool IsTrustedDownloadUri(Uri uri)
+        {
+            if (uri == null || !uri.IsAbsoluteUri) return false;
+            if (!String.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)) return false;
+            string host = uri.Host ?? "";
+            if (String.Equals(host, "github.com", StringComparison.OrdinalIgnoreCase)) return true;
+            if (host.EndsWith(".githubusercontent.com", StringComparison.OrdinalIgnoreCase) && host.Length > ".githubusercontent.com".Length) return true;
+            return false;
+        }
+
+        internal static bool TryParseSha256(string content, string fileName, out string sha256Hex)
+        {
+            sha256Hex = null;
+            if (String.IsNullOrWhiteSpace(content) || String.IsNullOrWhiteSpace(fileName)) return false;
+            using (StringReader reader = new StringReader(content))
+            {
+                string line;
+                while ((line = reader.ReadLine()) != null)
+                {
+                    string trimmed = line.Trim();
+                    if (trimmed.Length == 0 || trimmed.StartsWith("#", StringComparison.Ordinal)) continue;
+                    int split = trimmed.IndexOfAny(new[] { ' ', '\t' });
+                    if (split != 64) continue;
+                    string hash = trimmed.Substring(0, 64);
+                    if (!System.Text.RegularExpressions.Regex.IsMatch(hash, "^[0-9a-fA-F]{64}$")) continue;
+                    string target = trimmed.Substring(64).Trim();
+                    if (target.StartsWith("*", StringComparison.Ordinal)) target = target.Substring(1);
+                    if (String.Equals(target, fileName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        sha256Hex = hash.ToUpperInvariant();
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        internal static bool TryGetInstalledDirectory(string baseDirectory, out string installDir)
+        {
+            installDir = null;
+            if (String.IsNullOrWhiteSpace(baseDirectory)) return false;
+            try
+            {
+                string dir = Path.GetFullPath(baseDirectory).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                string marker = Path.Combine(dir, ProductMarkerFile);
+                if (!File.Exists(marker)) return false;
+                string content = File.ReadAllText(marker, Encoding.UTF8).Trim();
+                if (!String.Equals(content, ProductMarkerValue, StringComparison.Ordinal)) return false;
+                installDir = dir;
+                return true;
+            }
+            catch (Exception) { return false; }
+        }
+
+        internal static string DefaultUpdateDirectory()
+        {
+            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "EurekaGao", "FolderSeal", "Updates");
+        }
+
+        internal static string FormatBytes(long bytes)
+        {
+            if (bytes < 0) return "0 B";
+            if (bytes < 1024) return bytes + " B";
+            if (bytes < 1024 * 1024) return (bytes / 1024.0).ToString("0.0") + " KB";
+            return (bytes / (1024.0 * 1024.0)).ToString("0.00") + " MB";
+        }
+
+        private static HttpWebResponse OpenResponseFollowingTrustedRedirects(string url, Func<Uri, bool> uriValidator, CancellationToken token)
+        {
+            ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
+            Uri current;
+            if (!Uri.TryCreate(url, UriKind.Absolute, out current) || !uriValidator(current))
+                throw new InvalidDataException("下载地址不受信任。");
+
+            for (int hop = 0; hop <= MaximumRedirects; hop++)
+            {
+                token.ThrowIfCancellationRequested();
+                HttpWebRequest request = (HttpWebRequest)WebRequest.Create(current);
+                request.UserAgent = "FolderSeal/" + UpdateChecker.CurrentVersion.ToString(3);
+                request.Timeout = 15000;
+                request.ReadWriteTimeout = 30000;
+                request.AllowAutoRedirect = false;
+
+                using (token.Register(delegate { try { request.Abort(); } catch (Exception) { } }))
+                {
+                    HttpWebResponse response;
+                    try
+                    {
+                        response = (HttpWebResponse)request.GetResponse();
+                    }
+                    catch (WebException error)
+                    {
+                        if (token.IsCancellationRequested) throw new OperationCanceledException(token);
+                        HttpWebResponse errResp = error.Response as HttpWebResponse;
+                        if (errResp != null)
+                        {
+                            int code = (int)errResp.StatusCode;
+                            errResp.Dispose();
+                            throw new IOException("下载服务器返回错误（HTTP " + code + "）。", error);
+                        }
+                        throw new IOException("无法连接下载服务器：" + error.Message, error);
+                    }
+
+                    int status = (int)response.StatusCode;
+                    if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308)
+                    {
+                        string location = response.Headers["Location"];
+                        response.Dispose();
+                        if (String.IsNullOrWhiteSpace(location)) throw new InvalidDataException("下载重定向地址无效。");
+                        Uri next;
+                        if (!Uri.TryCreate(current, location, out next) || !uriValidator(next))
+                            throw new InvalidDataException("下载重定向目标不受信任。");
+                        current = next;
+                        continue;
+                    }
+                    if (status < 200 || status >= 300)
+                    {
+                        response.Dispose();
+                        throw new IOException("下载服务器返回异常状态（HTTP " + status + "）。");
+                    }
+                    return response;
+                }
+            }
+            throw new IOException("下载重定向次数过多。");
+        }
+
+        private static string ComputeSha256Hex(string filePath)
+        {
+            using (FileStream fs = File.OpenRead(filePath))
+            using (SHA256 sha = SHA256.Create())
+            {
+                byte[] hash = sha.ComputeHash(fs);
+                StringBuilder sb = new StringBuilder(hash.Length * 2);
+                foreach (byte b in hash) sb.Append(b.ToString("X2"));
+                return sb.ToString();
+            }
+        }
+
+        internal static Task<string> DownloadAsync(UpdateInfo info, IProgress<UpdateDownloadProgress> progress, CancellationToken token)
+        {
+            return DownloadAsync(info, DefaultUpdateDirectory(), IsTrustedDownloadUri, progress, token);
+        }
+
+        internal static Task<string> DownloadAsync(UpdateInfo info, string targetDirectory, Func<Uri, bool> uriValidator, IProgress<UpdateDownloadProgress> progress, CancellationToken token)
+        {
+            if (info == null || String.IsNullOrWhiteSpace(info.DownloadUrl)) throw new ArgumentException("缺少有效的安装包下载地址。");
+            string fileName = !String.IsNullOrWhiteSpace(info.FileName)
+                ? Path.GetFileName(info.FileName)
+                : ("FolderSeal-" + (info.Version != null ? info.Version.ToString(3) : "update") + "-Setup.exe");
+            Func<Uri, bool> validator = uriValidator ?? IsTrustedDownloadUri;
+
+            return Task.Run(delegate
+            {
+                Directory.CreateDirectory(targetDirectory);
+                string finalPath = Path.Combine(targetDirectory, fileName);
+                string partPath = finalPath + ".part";
+                try
+                {
+                    if (File.Exists(partPath)) File.Delete(partPath);
+                    if (progress != null) progress.Report(new UpdateDownloadProgress { Stage = "正在连接下载服务器…", BytesReceived = 0, TotalBytes = info.ExpectedSize, Percent = -1 });
+
+                    long received = 0;
+                    long total = info.ExpectedSize;
+                    using (HttpWebResponse response = OpenResponseFollowingTrustedRedirects(info.DownloadUrl, validator, token))
+                    using (Stream stream = response.GetResponseStream())
+                    using (FileStream output = new FileStream(partPath, FileMode.Create, FileAccess.Write, FileShare.None, 16384))
+                    {
+                        if (response.ContentLength > 0) total = response.ContentLength;
+                        if (total > MaximumInstallerBytes) throw new InvalidDataException("安装包体积超出安全限制。");
+                        byte[] buffer = new byte[16384];
+                        long lastReported = -1;
+                        int read;
+                        while ((read = stream.Read(buffer, 0, buffer.Length)) > 0)
+                        {
+                            token.ThrowIfCancellationRequested();
+                            received += read;
+                            if (received > MaximumInstallerBytes) throw new InvalidDataException("安装包体积超出安全限制。");
+                            output.Write(buffer, 0, read);
+                            if (progress != null && (received - lastReported >= 16384 || (total > 0 && received >= total)))
+                            {
+                                lastReported = received;
+                                int pct = total > 0 ? (int)Math.Min(100, (received * 100L) / total) : -1;
+                                progress.Report(new UpdateDownloadProgress { Stage = "正在下载安装包…", BytesReceived = received, TotalBytes = total, Percent = pct });
+                            }
+                        }
+                    }
+
+                    token.ThrowIfCancellationRequested();
+                    if (received <= 0) throw new InvalidDataException("下载的安装包为空。");
+                    if (info.ExpectedSize > 0 && received != info.ExpectedSize)
+                        throw new InvalidDataException("下载的安装包大小与发布信息不一致（已下载 " + received + " 字节，预期 " + info.ExpectedSize + " 字节）。");
+
+                    if (progress != null) progress.Report(new UpdateDownloadProgress { Stage = "正在校验安装包完整性…", BytesReceived = received, TotalBytes = received, Percent = 100 });
+
+                    if (!String.IsNullOrWhiteSpace(info.ChecksumUrl))
+                    {
+                        string checksumText;
+                        using (HttpWebResponse checksumResp = OpenResponseFollowingTrustedRedirects(info.ChecksumUrl, validator, token))
+                        using (Stream checksumStream = checksumResp.GetResponseStream())
+                        using (MemoryStream mem = new MemoryStream())
+                        {
+                            byte[] block = new byte[4096];
+                            int count;
+                            while ((count = checksumStream.Read(block, 0, block.Length)) > 0)
+                            {
+                                token.ThrowIfCancellationRequested();
+                                if (mem.Length + count > MaximumChecksumBytes) throw new InvalidDataException("校验文件过大。");
+                                mem.Write(block, 0, count);
+                            }
+                            checksumText = Encoding.UTF8.GetString(mem.ToArray());
+                        }
+                        string expectedHash;
+                        if (TryParseSha256(checksumText, fileName, out expectedHash))
+                        {
+                            string actualHash = ComputeSha256Hex(partPath);
+                            if (!String.Equals(actualHash, expectedHash, StringComparison.OrdinalIgnoreCase))
+                                throw new InvalidDataException("安装包 SHA-256 校验未通过，文件可能已损坏。");
+                        }
+                    }
+
+                    if (File.Exists(finalPath)) File.Delete(finalPath);
+                    File.Move(partPath, finalPath);
+                    if (progress != null) progress.Report(new UpdateDownloadProgress { Stage = "下载完成，正在启动覆盖安装…", BytesReceived = received, TotalBytes = received, Percent = 100 });
+                    return finalPath;
+                }
+                catch (Exception)
+                {
+                    try { if (File.Exists(partPath)) File.Delete(partPath); } catch (Exception) { }
+                    throw;
+                }
+            }, token);
+        }
+
+        internal static string BuildApplyScript(string installerPath, string installDir, int waitPid, string scriptPath)
+        {
+            Func<string, string> psQuote = delegate(string value) { return "'" + (value ?? "").Replace("'", "''") + "'"; };
+            StringBuilder sb = new StringBuilder();
+            sb.AppendLine("$ErrorActionPreference = 'SilentlyContinue'");
+            sb.AppendLine("$waitPid = " + waitPid);
+            sb.AppendLine("$installer = " + psQuote(installerPath));
+            sb.AppendLine("$scriptFile = " + psQuote(scriptPath));
+            sb.AppendLine("$deadline = [DateTime]::UtcNow.AddSeconds(20)");
+            sb.AppendLine("while ([DateTime]::UtcNow -lt $deadline) {");
+            sb.AppendLine("  if (-not (Get-Process -Id $waitPid -ErrorAction SilentlyContinue)) { break }");
+            sb.AppendLine("  Start-Sleep -Milliseconds 200");
+            sb.AppendLine("}");
+            sb.AppendLine("Start-Sleep -Milliseconds 300");
+            if (!String.IsNullOrWhiteSpace(installDir))
+            {
+                string exePath = Path.Combine(installDir, "FolderSeal.exe");
+                sb.AppendLine("$installDir = " + psQuote(installDir));
+                sb.AppendLine("$exePath = " + psQuote(exePath));
+                sb.AppendLine("$proc = Start-Process -FilePath $installer -ArgumentList (\"/S /D=\" + $installDir) -Wait -PassThru");
+                sb.AppendLine("if ($proc -and $proc.ExitCode -eq 0) {");
+                sb.AppendLine("  if (Test-Path -LiteralPath $exePath) { Start-Process -FilePath $exePath }");
+                sb.AppendLine("  Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue");
+                sb.AppendLine("} else {");
+                sb.AppendLine("  Start-Process -FilePath $installer");
+                sb.AppendLine("}");
+            }
+            else
+            {
+                sb.AppendLine("Start-Process -FilePath $installer");
+            }
+            sb.AppendLine("Remove-Item -LiteralPath $scriptFile -Force -ErrorAction SilentlyContinue");
+            return sb.ToString();
+        }
+
+        internal static void LaunchInstallerAfterExit(string installerPath, string installDir, int currentPid)
+        {
+            string updateDir = Path.GetDirectoryName(installerPath) ?? DefaultUpdateDirectory();
+            Directory.CreateDirectory(updateDir);
+            string scriptPath = Path.Combine(updateDir, "apply-update-" + Guid.NewGuid().ToString("N") + ".ps1");
+            string script = BuildApplyScript(installerPath, installDir, currentPid, scriptPath);
+            File.WriteAllText(scriptPath, script, new UTF8Encoding(true));
+
+            string psExe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), @"WindowsPowerShell\v1.0\powershell.exe");
+            if (!File.Exists(psExe)) psExe = "powershell.exe";
+            ProcessStartInfo psi = new ProcessStartInfo
+            {
+                FileName = psExe,
+                Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" + scriptPath + "\"",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Hidden
+            };
+            Process.Start(psi);
         }
     }
 
@@ -2727,6 +3050,218 @@ namespace FolderSeal
         }
     }
 
+    internal sealed class UpdateProgressDialog : Form
+    {
+        private readonly UpdateInfo update;
+        private readonly Func<UpdateInfo, IProgress<UpdateDownloadProgress>, CancellationToken, Task<string>> downloader;
+        private readonly NoticeCard headerCard;
+        private readonly Label headerTitle;
+        private readonly Label headerBadge;
+        private readonly Label statusLabel;
+        private readonly ProgressBar progressBar;
+        private readonly Label detailLabel;
+        private readonly ActionButton retryBtn;
+        private readonly ActionButton browserBtn;
+        private readonly ActionButton cancelBtn;
+        private CancellationTokenSource cts;
+        private bool downloading;
+        private bool completed;
+
+        public string DownloadedInstallerPath { get; private set; }
+        public bool FallbackToBrowser { get; private set; }
+
+        public UpdateProgressDialog(UpdateInfo update, Func<UpdateInfo, IProgress<UpdateDownloadProgress>, CancellationToken, Task<string>> downloader = null)
+        {
+            this.update = update;
+            this.downloader = downloader ?? UpdateInstaller.DownloadAsync;
+            UiTheme.StyleDialog(this, "下载更新");
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = false;
+            MinimizeBox = false;
+            ShowInTaskbar = false;
+            ClientSize = new Size(490, 250);
+
+            TableLayoutPanel root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Margin = Padding.Empty };
+            root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 62));
+
+            TableLayoutPanel body = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(22, 18, 22, 12), ColumnCount = 1, RowCount = 4 };
+            body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            body.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+            body.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+            body.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
+            body.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+            headerCard = new NoticeCard { Dock = DockStyle.Fill, BackColor = UiTheme.PrimaryTint, CardBorder = UiTheme.PrimaryBorder, AccentBar = UiTheme.Primary, Padding = new Padding(14, 8, 12, 8), Margin = new Padding(0, 0, 0, 12) };
+            TableLayoutPanel headerRow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty };
+            headerRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            headerRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            headerTitle = new Label { Text = "正在下载密封夹 " + (update != null && update.Version != null ? "v" + update.Version.ToString(3) : "新版本"), Dock = DockStyle.Fill, ForeColor = UiTheme.Primary, Font = new Font("Microsoft YaHei UI", 10f, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
+            headerBadge = new Label { Text = "更新中", AutoSize = true, ForeColor = UiTheme.Primary, Font = new Font("Microsoft YaHei UI", 8.5f, FontStyle.Bold), TextAlign = ContentAlignment.MiddleRight, Margin = new Padding(8, 4, 0, 0) };
+            headerRow.Controls.Add(headerTitle, 0, 0);
+            headerRow.Controls.Add(headerBadge, 1, 0);
+            headerCard.Controls.Add(headerRow);
+            body.Controls.Add(headerCard, 0, 0);
+
+            statusLabel = new Label { Text = "正在准备下载…", Dock = DockStyle.Fill, ForeColor = UiTheme.Ink, Font = new Font("Microsoft YaHei UI", 9.5f), TextAlign = ContentAlignment.BottomLeft, AutoEllipsis = true, Margin = new Padding(2, 0, 2, 6) };
+            body.Controls.Add(statusLabel, 0, 1);
+
+            progressBar = new ProgressBar { Dock = DockStyle.Fill, Style = ProgressBarStyle.Marquee, MarqueeAnimationSpeed = 24, Minimum = 0, Maximum = 100, Value = 0, Margin = new Padding(2, 2, 2, 2) };
+            body.Controls.Add(progressBar, 0, 2);
+
+            detailLabel = new Label { Text = "下载完成后将自动关闭当前窗口并覆盖安装。", Dock = DockStyle.Fill, ForeColor = UiTheme.Muted, Font = new Font("Microsoft YaHei UI", 8.8f), TextAlign = ContentAlignment.TopLeft, Margin = new Padding(2, 8, 2, 0) };
+            body.Controls.Add(detailLabel, 0, 3);
+
+            Panel footer = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.Surface, Padding = new Padding(22, 8, 22, 12) };
+            footer.Paint += delegate(object s, PaintEventArgs e) { using (Pen pen = new Pen(UiTheme.LineSoft)) e.Graphics.DrawLine(pen, 0, 0, footer.Width, 0); };
+            FlowLayoutPanel buttonBar = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, WrapContents = false };
+
+            retryBtn = UiTheme.CreateButton("重试", async delegate { await StartDownloadAsync(); }, ButtonTone.Primary, 88, 34);
+            retryBtn.Visible = false;
+            browserBtn = UiTheme.CreateButton("浏览器下载", delegate { FallbackToBrowser = true; DialogResult = DialogResult.Cancel; Close(); }, ButtonTone.Secondary, 108, 34);
+            browserBtn.Visible = false;
+            cancelBtn = UiTheme.CreateButton("取消", delegate { CancelOrClose(); }, ButtonTone.Secondary, 84, 34);
+
+            buttonBar.Controls.Add(retryBtn);
+            buttonBar.Controls.Add(browserBtn);
+            buttonBar.Controls.Add(cancelBtn);
+            footer.Controls.Add(buttonBar);
+
+            CancelButton = cancelBtn;
+            root.Controls.Add(body, 0, 0);
+            root.Controls.Add(footer, 0, 1);
+            Controls.Add(root);
+
+            Shown += async delegate { await StartDownloadAsync(); };
+            FormClosing += delegate(object sender, FormClosingEventArgs e)
+            {
+                if (downloading && cts != null && !cts.IsCancellationRequested)
+                {
+                    cts.Cancel();
+                }
+            };
+        }
+
+        private void CancelOrClose()
+        {
+            if (downloading)
+            {
+                cancelBtn.Enabled = false;
+                statusLabel.Text = "正在取消下载…";
+                if (cts != null && !cts.IsCancellationRequested) cts.Cancel();
+                return;
+            }
+            DialogResult = DialogResult.Cancel;
+            Close();
+        }
+
+        internal void ApplyProgress(UpdateDownloadProgress state)
+        {
+            if (IsDisposed || Disposing || state == null) return;
+            if (!String.IsNullOrEmpty(state.Stage)) statusLabel.Text = state.Stage;
+            if (state.Percent >= 0 && state.Percent <= 100)
+            {
+                if (progressBar.Style != ProgressBarStyle.Continuous) progressBar.Style = ProgressBarStyle.Continuous;
+                progressBar.Value = state.Percent;
+            }
+            else if (progressBar.Style != ProgressBarStyle.Marquee)
+            {
+                progressBar.Style = ProgressBarStyle.Marquee;
+            }
+
+            if (state.TotalBytes > 0)
+            {
+                int pct = state.Percent >= 0 ? state.Percent : (int)Math.Min(100, (state.BytesReceived * 100L) / state.TotalBytes);
+                detailLabel.Text = pct + "% · " + UpdateInstaller.FormatBytes(state.BytesReceived) + " / " + UpdateInstaller.FormatBytes(state.TotalBytes);
+            }
+            else if (state.BytesReceived > 0)
+            {
+                detailLabel.Text = "已下载 " + UpdateInstaller.FormatBytes(state.BytesReceived);
+            }
+        }
+
+        internal void ApplyFailure(string reason)
+        {
+            if (IsDisposed || Disposing) return;
+            headerCard.BackColor = UiTheme.AmberBg;
+            headerCard.CardBorder = UiTheme.AmberBorder;
+            headerCard.AccentBar = UiTheme.AmberBar;
+            headerTitle.ForeColor = UiTheme.Amber;
+            headerBadge.ForeColor = UiTheme.Amber;
+            headerBadge.Text = "下载失败";
+            headerCard.Invalidate();
+            statusLabel.Text = "未能完成安装包下载";
+            progressBar.Style = ProgressBarStyle.Continuous;
+            progressBar.Value = 0;
+            detailLabel.ForeColor = UiTheme.Ink;
+            detailLabel.Text = String.IsNullOrWhiteSpace(reason) ? "请检查网络连接后重试，或改用浏览器下载。" : reason;
+            retryBtn.Visible = true;
+            browserBtn.Visible = update != null && !String.IsNullOrWhiteSpace(update.DownloadUrl);
+            cancelBtn.Text = "关闭";
+            cancelBtn.Enabled = true;
+            AcceptButton = retryBtn;
+        }
+
+        private void ResetForDownload()
+        {
+            headerCard.BackColor = UiTheme.PrimaryTint;
+            headerCard.CardBorder = UiTheme.PrimaryBorder;
+            headerCard.AccentBar = UiTheme.Primary;
+            headerTitle.ForeColor = UiTheme.Primary;
+            headerBadge.ForeColor = UiTheme.Primary;
+            headerBadge.Text = "更新中";
+            headerCard.Invalidate();
+            statusLabel.Text = "正在连接下载服务器…";
+            progressBar.Style = ProgressBarStyle.Marquee;
+            progressBar.Value = 0;
+            detailLabel.ForeColor = UiTheme.Muted;
+            detailLabel.Text = "下载完成后将自动关闭当前窗口并覆盖安装。";
+            retryBtn.Visible = false;
+            browserBtn.Visible = false;
+            cancelBtn.Text = "取消";
+            cancelBtn.Enabled = true;
+            AcceptButton = null;
+        }
+
+        private async Task StartDownloadAsync()
+        {
+            if (downloading || completed || IsDisposed || Disposing) return;
+            downloading = true;
+            ResetForDownload();
+            if (cts != null) { cts.Dispose(); cts = null; }
+            cts = new CancellationTokenSource();
+            IProgress<UpdateDownloadProgress> progress = new Progress<UpdateDownloadProgress>(ApplyProgress);
+            try
+            {
+                string path = await downloader(update, progress, cts.Token);
+                if (IsDisposed || Disposing) return;
+                completed = true;
+                downloading = false;
+                DownloadedInstallerPath = path;
+                cancelBtn.Enabled = false;
+                DialogResult = DialogResult.OK;
+                Close();
+            }
+            catch (OperationCanceledException)
+            {
+                downloading = false;
+                if (!IsDisposed && !Disposing) { DialogResult = DialogResult.Cancel; Close(); }
+            }
+            catch (Exception error)
+            {
+                downloading = false;
+                if (!IsDisposed && !Disposing) ApplyFailure(error.Message);
+            }
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing && cts != null) { cts.Dispose(); cts = null; }
+            base.Dispose(disposing);
+        }
+    }
+
     internal sealed class SettingsDialog : Form
     {
         private readonly Label stateLabel = new Label { AutoSize = true, Font = new Font("Microsoft YaHei UI", 9.5f, FontStyle.Bold) };
@@ -3457,7 +3992,7 @@ namespace FolderSeal
             sidebar.Controls.Add(helpLink, 0, 7);
 
             updateLink.Font = sideLinkFont; updateLink.LinkColor = updateLink.ActiveLinkColor = updateLink.VisitedLinkColor = Green;
-            updateLink.LinkClicked += async delegate { if (availableUpdate != null) OfferUpdate(availableUpdate); else await CheckForUpdates(true); };
+            updateLink.LinkClicked += async delegate { if (availableUpdate != null) await OfferUpdate(availableUpdate); else await CheckForUpdates(true); };
             tips.SetToolTip(updateLink, "当前版本 " + UpdateChecker.CurrentVersion.ToString(3) + "；检查公开发布的安装包。");
             sidebar.Controls.Add(updateLink, 0, 8);
 
@@ -3838,7 +4373,7 @@ namespace FolderSeal
                 if (interactive)
                 {
                     if (result == null) AppDialog.Show(this, "当前版本：" + UpdateChecker.CurrentVersion.ToString(3) + "\r\n未发现更新的已发布安装包。", "检测升级", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    else OfferUpdate(result);
+                    else await OfferUpdate(result);
                 }
             }
             catch (Exception)
@@ -3851,13 +4386,58 @@ namespace FolderSeal
             }
             finally { checkingUpdate = false; if (!IsDisposed && !Disposing) updateLink.Enabled = true; }
         }
-        private void OfferUpdate(UpdateInfo update)
+        private async Task OfferUpdate(UpdateInfo update)
         {
-            string message = "当前版本：" + UpdateChecker.CurrentVersion.ToString(3) + "\r\n新版本：" + update.Version.ToString(3) + (update.Prerelease ? "（预发布版，仍有验证工作未完成）" : "") + "\r\n\r\n是否打开浏览器下载安装包？\r\n安装前请保存并锁定资料，正常退出软件，再运行安装包。";
-            if (AppDialog.Show(this, message, "发现新版本", MessageBoxButtons.YesNo, MessageBoxIcon.Information) == DialogResult.Yes)
+            if (update == null || busy) return;
+            string installDir;
+            bool isInstalled = UpdateInstaller.TryGetInstalledDirectory(AppDomain.CurrentDomain.BaseDirectory, out installDir);
+            string actionLine = isInstalled
+                ? "是否立即下载并直接覆盖安装新版本？\r\n下载完成后将自动退出软件、完成安装并重新打开。"
+                : "是否立即下载新版本安装包？\r\n当前为便携版，下载完成后将自动退出软件并打开安装向导。";
+            if (session != null && session.Open)
+                actionLine += "\r\n当前有未锁定的加密文件夹，开始下载前将先引导你保存并锁定。";
+            string message = "当前版本：" + UpdateChecker.CurrentVersion.ToString(3) + "\r\n新版本：" + update.Version.ToString(3) + (update.Prerelease ? "（预发布版，仍有验证工作未完成）" : "") + "\r\n\r\n" + actionLine;
+            if (AppDialog.Show(this, message, "发现新版本", MessageBoxButtons.YesNo, MessageBoxIcon.Information) != DialogResult.Yes) return;
+
+            if (session != null && session.Open)
+            {
+                using (LockConfirmDialog confirm = new LockConfirmDialog(
+                    "更新前保存并锁定",
+                    "更新前需要加密保存并清理明文工作区",
+                    "请先关闭外部编辑器中打开的文件。点击“保存并锁定”完成后，将自动开始下载新版本安装包。",
+                    "保存并锁定"))
+                {
+                    if (confirm.ShowDialog(this) != DialogResult.OK) return;
+                }
+                if (!await Run(delegate { session.Lock(); return "已安全锁定"; })) return;
+            }
+
+            string downloadedPath = null;
+            bool openInBrowser = false;
+            using (UpdateProgressDialog dialog = new UpdateProgressDialog(update))
+            {
+                if (dialog.ShowDialog(this) == DialogResult.OK) downloadedPath = dialog.DownloadedInstallerPath;
+                else openInBrowser = dialog.FallbackToBrowser;
+            }
+            if (openInBrowser)
             {
                 try { Process.Start(new ProcessStartInfo(update.DownloadUrl) { UseShellExecute = true }); }
                 catch (Exception) { AppDialog.Show(this, "无法打开浏览器，请检查默认浏览器设置后重试。", "下载未开始"); }
+                return;
+            }
+            if (String.IsNullOrWhiteSpace(downloadedPath) || !File.Exists(downloadedPath)) return;
+
+            try
+            {
+                UpdateInstaller.LaunchInstallerAfterExit(downloadedPath, isInstalled ? installDir : null, Process.GetCurrentProcess().Id);
+                StopWorkWatcher();
+                if (session != null) session.Dispose();
+                closing = true;
+                Close();
+            }
+            catch (Exception error)
+            {
+                AppDialog.Show(this, "安装包已下载完成，但未能自动启动安装程序：\r\n" + error.Message + "\r\n\r\n安装包位置：" + downloadedPath, "启动安装失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
         }
         private Task<bool> EnsureMaster(bool requirePassword = false)
