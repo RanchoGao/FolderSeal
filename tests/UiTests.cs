@@ -301,12 +301,59 @@ internal static class UiTests
                 Render(password, output, "password");
                 Check(Walk(password).OfType<Label>().Any(x => x.Text == "输入密码"), "password prompt uses correct wording");
                 Check(Walk(password).OfType<Button>().Any(x => x.Text == "显示"), "password prompt offers visibility toggle");
+                Check(!Walk(password).OfType<Label>().Any(x => x.Text.StartsWith("密码提示：")), "password prompt hides hint card when no hint is set");
             }
+            using (PasswordDialog passwordWithHint = new PasswordDialog(false, "输入密码", null, null, "老家门牌号 + 常用年份"))
+            {
+                Render(passwordWithHint, output, "password-with-hint");
+                Check(Walk(passwordWithHint).OfType<Label>().Any(x => x.Text == "密码提示：老家门牌号 + 常用年份"), "password prompt displays configured password hint");
+            }
+            using (PasswordDialog deleteWithHint = new PasswordDialog(false, "删除前再次验证密码", requestFixture(fixture), null, "常用组合线索"))
+                Check(Walk(deleteWithHint).OfType<TextBox>().Any(x => x.ReadOnly && x.Text == requestFixture(fixture)) && Walk(deleteWithHint).OfType<Label>().Any(x => x.Text == "密码提示：常用组合线索"), "deletion verification displays both target path and password hint");
             using (PasswordDialog firstSetup = new PasswordDialog(true, "设置密码"))
             {
                 Render(firstSetup, output, "password-create");
                 Check(Walk(firstSetup).OfType<Label>().Any(x => x.Text.Contains("0 / 8")), "first setup shows live character progress");
+                Check(Walk(firstSetup).OfType<TextBox>().Any(x => x.AccessibleName == "密码提示"), "first setup exposes optional password hint input");
             }
+            using (PasswordDialog optionalHint = new PasswordDialog(true, "设置密码"))
+            {
+                optionalHint.Shown += delegate
+                {
+                    ((TextBox)Get(optionalHint, "first")).Text = "ValidPass8!";
+                    ((TextBox)Get(optionalHint, "second")).Text = "ValidPass8!";
+                    optionalHint.AcceptButton.PerformClick();
+                };
+                Check(optionalHint.ShowDialog() == DialogResult.OK && optionalHint.PasswordHint == "", "initial password setup allows blank optional password hint");
+            }
+            using (PasswordDialog changeSetup = new PasswordDialog(true, "设置新密码"))
+            {
+                changeSetup.Shown += delegate
+                {
+                    TextBox firstBox = (TextBox)Get(changeSetup, "first");
+                    TextBox secondBox = (TextBox)Get(changeSetup, "second");
+                    TextBox hintBox = (TextBox)Get(changeSetup, "hintBox");
+                    firstBox.Text = "NewSecret9!";
+                    secondBox.Text = "NewSecret9!";
+                    hintBox.Text = "包含 NewSecret9! 本身";
+                    changeSetup.AcceptButton.PerformClick();
+                    Check(changeSetup.DialogResult == DialogResult.None && ((Label)Get(changeSetup, "errorHint")).Text.Contains("密码提示不能包含密码本身"), "password hint containing the password itself is rejected");
+                    hintBox.Text = "  老家楼栋 = 3号楼  ";
+                    changeSetup.AcceptButton.PerformClick();
+                };
+                Check(changeSetup.ShowDialog() == DialogResult.OK && changeSetup.PasswordHint == "老家楼栋 = 3号楼", "change password accepts optional normalized password hint");
+            }
+            string settingsDir = Path.Combine(fixture, "settings-hint-test");
+            AppSettings persistedSettings = new AppSettings(settingsDir);
+            Check(persistedSettings.PasswordHint == "", "new settings default to empty password hint");
+            persistedSettings.HideFolderEntry = true;
+            persistedSettings.PasswordHint = "  第一行\r\n第二行 = 线索  ";
+            persistedSettings.Save();
+            AppSettings reloadedSettings = new AppSettings(settingsDir);
+            Check(reloadedSettings.HideFolderEntry && reloadedSettings.PasswordHint == "第一行  第二行 = 线索", "AppSettings persists and normalizes password hint alongside hide-entry");
+            reloadedSettings.PasswordHint = "   ";
+            reloadedSettings.Save();
+            Check(new AppSettings(settingsDir).PasswordHint == "", "clearing password hint removes it from AppSettings");
             using (CreateVaultDialog createDialog = new CreateVaultDialog(fixture, null, true))
             {
                 Render(createDialog, output, "create-vault");

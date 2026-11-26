@@ -2135,7 +2135,7 @@ namespace FolderSeal
         {
             return CharacterCount(password) >= NewPasswordMinimum;
         }
-        private readonly TextBox first = new TextBox(), second = new TextBox();
+        private readonly TextBox first = new TextBox(), second = new TextBox(), hintBox = new TextBox();
         private readonly Label lengthHint = new Label { AutoSize = true, ForeColor = UiTheme.Muted, Font = new Font("Microsoft YaHei UI", 8.5f) };
         private readonly Panel meterBack = new Panel { Dock = DockStyle.Top, Height = 5, BackColor = UiTheme.Surface2, Margin = new Padding(0, 6, 0, 4) };
         private readonly Panel meterFill = new Panel { Dock = DockStyle.Left, Width = 0, BackColor = UiTheme.AmberBar };
@@ -2145,13 +2145,24 @@ namespace FolderSeal
         private readonly Func<string, string> validator;
         private bool validating;
         public string Value { get; private set; }
-        public PasswordDialog(bool creating, string title, string targetPath = null, Func<string, string> validator = null)
+        public string PasswordHint { get; private set; }
+        public PasswordDialog(bool creating, string title, string targetPath = null, Func<string, string> validator = null, string passwordHint = null)
         {
             this.creating = creating; this.validator = validator;
+            string normalizedHint = AppSettings.NormalizePasswordHint(passwordHint);
             UiTheme.StyleDialog(this, title);
             FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false; MinimizeBox = false;
             bool danger = title != null && title.Contains("删除");
-            ClientSize = new Size(490, creating ? 378 : (targetPath != null ? 296 : 242));
+            int baseHeight = creating ? 474 : (targetPath != null ? 296 : 242);
+            int hintCardHeight = 0;
+            Font hintDisplayFont = new Font("Microsoft YaHei UI", 9f);
+            if (!creating && !String.IsNullOrEmpty(normalizedHint))
+            {
+                Size measured = TextRenderer.MeasureText("密码提示：" + normalizedHint, hintDisplayFont, new Size(414, 0), TextFormatFlags.WordBreak);
+                hintCardHeight = Math.Max(38, measured.Height + 16);
+                baseHeight += hintCardHeight + 12;
+            }
+            ClientSize = new Size(490, baseHeight);
 
             TableLayoutPanel root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Margin = Padding.Empty };
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -2181,6 +2192,35 @@ namespace FolderSeal
                 body.Controls.Add(new Label { Text = "再次输入密码", AutoSize = true, Font = new Font("Microsoft YaHei UI", 9.5f, FontStyle.Bold), Margin = new Padding(0, 2, 0, 5) });
                 second.AccessibleName = "再次输入密码"; second.UseSystemPasswordChar = true; second.Dock = DockStyle.Fill;
                 body.Controls.Add(WrapPasswordBox(second, "显示确认密码"));
+                body.Controls.Add(new Label { Text = "密码提示（选填）", AutoSize = true, Font = new Font("Microsoft YaHei UI", 9.5f, FontStyle.Bold), Margin = new Padding(0, 8, 0, 4) });
+                hintBox.AccessibleName = "密码提示"; hintBox.Dock = DockStyle.Top; hintBox.MaxLength = AppSettings.MaxPasswordHintLength;
+                hintBox.Margin = new Padding(0, 0, 0, 3);
+                if (!String.IsNullOrEmpty(normalizedHint)) hintBox.Text = normalizedHint;
+                body.Controls.Add(hintBox);
+                body.Controls.Add(new Label { Text = "输入密码时显示，请勿包含密码本身；留空则不设置", AutoSize = true, ForeColor = UiTheme.Muted, Font = new Font("Microsoft YaHei UI", 8.5f), Margin = new Padding(0, 0, 0, 4) });
+            }
+            else if (!String.IsNullOrEmpty(normalizedHint))
+            {
+                NoticeCard hintCard = new NoticeCard
+                {
+                    Dock = DockStyle.Top,
+                    Height = hintCardHeight,
+                    BackColor = UiTheme.PrimaryTint,
+                    CardBorder = UiTheme.PrimaryBorder,
+                    AccentBar = UiTheme.Primary,
+                    Padding = new Padding(12, 8, 10, 8),
+                    Margin = new Padding(0, 8, 0, 2)
+                };
+                hintCard.Controls.Add(new Label
+                {
+                    Text = "密码提示：" + normalizedHint,
+                    Dock = DockStyle.Fill,
+                    ForeColor = UiTheme.Ink,
+                    Font = hintDisplayFont,
+                    TextAlign = ContentAlignment.MiddleLeft,
+                    AccessibleName = "密码提示"
+                });
+                body.Controls.Add(hintCard);
             }
 
             body.Controls.Add(capsHint);
@@ -2197,6 +2237,7 @@ namespace FolderSeal
 
             first.TextChanged += delegate { errorHint.Visible = false; UpdateMeter(); };
             second.TextChanged += delegate { errorHint.Visible = false; };
+            hintBox.TextChanged += delegate { errorHint.Visible = false; };
             KeyEventHandler capsCheck = delegate { capsHint.Visible = Control.IsKeyLocked(Keys.CapsLock); };
             first.KeyUp += capsCheck; second.KeyUp += capsCheck;
 
@@ -2206,10 +2247,17 @@ namespace FolderSeal
                 if (creating && !HasMinimumLength(first.Text)) { ShowInlineError("新密码至少需要 " + NewPasswordMinimum + " 个字符。建议使用密码管理器生成长密码。"); first.Focus(); return; }
                 if (creating && first.Text != second.Text) { ShowInlineError("两次输入的密码不一致，请核对。"); second.Focus(); second.SelectAll(); return; }
                 if (first.Text.Length == 0) { ShowInlineError("请输入密码。"); first.Focus(); return; }
+                string candidateHint = creating ? AppSettings.NormalizePasswordHint(hintBox.Text) : null;
+                if (creating && !String.IsNullOrEmpty(candidateHint) && candidateHint.IndexOf(first.Text, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    ShowInlineError("密码提示不能包含密码本身，请改用只有你能看懂的线索或留空。");
+                    hintBox.Focus(); hintBox.SelectAll();
+                    return;
+                }
                 string candidate = first.Text;
                 if (this.validator != null)
                 {
-                    validating = true; ok.Enabled = cancel.Enabled = first.Enabled = second.Enabled = false;
+                    validating = true; ok.Enabled = cancel.Enabled = first.Enabled = second.Enabled = hintBox.Enabled = false;
                     string originalText = ok.Text; ok.Text = "验证中…";
                     string err = null;
                     try { err = await Task.Run(delegate { return this.validator(candidate); }); }
@@ -2217,7 +2265,7 @@ namespace FolderSeal
                     finally
                     {
                         validating = false;
-                        if (!IsDisposed) { ok.Text = originalText; ok.Enabled = cancel.Enabled = first.Enabled = second.Enabled = true; }
+                        if (!IsDisposed) { ok.Text = originalText; ok.Enabled = cancel.Enabled = first.Enabled = second.Enabled = hintBox.Enabled = true; }
                     }
                     if (IsDisposed) return;
                     if (!String.IsNullOrEmpty(err))
@@ -2227,7 +2275,7 @@ namespace FolderSeal
                         return;
                     }
                 }
-                Value = candidate; first.Clear(); second.Clear(); DialogResult = DialogResult.OK;
+                Value = candidate; PasswordHint = candidateHint; first.Clear(); second.Clear(); hintBox.Clear(); DialogResult = DialogResult.OK;
             };
 
             root.Controls.Add(body, 0, 0); root.Controls.Add(footer, 0, 1); Controls.Add(root);
@@ -2270,7 +2318,7 @@ namespace FolderSeal
             errorHint.Text = message;
             errorHint.Visible = true;
         }
-        protected override void Dispose(bool disposing) { Value = null; if (disposing) { first.Clear(); second.Clear(); } base.Dispose(disposing); }
+        protected override void Dispose(bool disposing) { Value = null; PasswordHint = null; if (disposing) { first.Clear(); second.Clear(); hintBox.Clear(); } base.Dispose(disposing); }
     }
 
     internal sealed class NameDialog : Form
@@ -2865,8 +2913,17 @@ namespace FolderSeal
 
     internal sealed class AppSettings
     {
+        internal const int MaxPasswordHintLength = 100;
         public string FilePath { get; private set; }
         public bool HideFolderEntry { get; set; }
+        public string PasswordHint { get; set; }
+        public static string NormalizePasswordHint(string hint)
+        {
+            if (String.IsNullOrWhiteSpace(hint)) return "";
+            string cleaned = hint.Replace("\r", " ").Replace("\n", " ").Trim();
+            if (cleaned.Length > MaxPasswordHintLength) cleaned = cleaned.Substring(0, MaxPasswordHintLength).TrimEnd();
+            return cleaned;
+        }
         public AppSettings(string stateDir)
         {
             FilePath = Path.Combine(stateDir, "settings.txt");
@@ -2875,12 +2932,18 @@ namespace FolderSeal
         public void Load()
         {
             HideFolderEntry = false;
+            PasswordHint = "";
             try
             {
                 if (!File.Exists(FilePath)) return;
                 foreach (string line in File.ReadAllLines(FilePath, Encoding.UTF8))
-                    if (String.Equals(line.Trim(), "hide-entry=1", StringComparison.OrdinalIgnoreCase))
+                {
+                    string trimmed = line.Trim();
+                    if (String.Equals(trimmed, "hide-entry=1", StringComparison.OrdinalIgnoreCase))
                         HideFolderEntry = true;
+                    else if (trimmed.StartsWith("password-hint=", StringComparison.OrdinalIgnoreCase))
+                        PasswordHint = NormalizePasswordHint(trimmed.Substring("password-hint=".Length));
+                }
             }
             catch (Exception) { }
         }
@@ -2888,7 +2951,12 @@ namespace FolderSeal
         {
             string dir = Path.GetDirectoryName(FilePath);
             if (!String.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-            File.WriteAllText(FilePath, "hide-entry=" + (HideFolderEntry ? "1" : "0") + "\r\n", Encoding.UTF8);
+            StringBuilder sb = new StringBuilder();
+            sb.Append("hide-entry=").Append(HideFolderEntry ? "1" : "0").Append("\r\n");
+            string normalizedHint = NormalizePasswordHint(PasswordHint);
+            if (!String.IsNullOrEmpty(normalizedHint))
+                sb.Append("password-hint=").Append(normalizedHint).Append("\r\n");
+            File.WriteAllText(FilePath, sb.ToString(), Encoding.UTF8);
         }
     }
 
@@ -3810,10 +3878,15 @@ namespace FolderSeal
                     return "密码错误，或目录表无法读取/保存（未重置目录表）：" + error.Message;
                 }
             };
-            using (PasswordDialog dialog = new PasswordDialog(creating, creating ? "设置密码" : "输入密码", null, validator))
+            using (PasswordDialog dialog = new PasswordDialog(creating, creating ? "设置密码" : "输入密码", null, validator, creating ? null : appSettings.PasswordHint))
             {
                 if (dialog.ShowDialog(this) != DialogResult.OK) return Task.FromResult(false);
                 masterPassword = dialog.Value;
+                if (creating)
+                {
+                    appSettings.PasswordHint = AppSettings.NormalizePasswordHint(dialog.PasswordHint);
+                    try { appSettings.Save(); } catch (Exception) { }
+                }
                 return Task.FromResult(true);
             }
         }
@@ -3881,7 +3954,7 @@ namespace FolderSeal
                 return;
             }
 
-            string oldPassword = null, newPassword = null;
+            string oldPassword = null, newPassword = null, newPasswordHint = null;
             try
             {
                 Func<string, string> verifyOld = delegate(string supplied)
@@ -3896,7 +3969,7 @@ namespace FolderSeal
                         return "当前密码错误，请重新输入。";
                     }
                 };
-                using (PasswordDialog oldDialog = new PasswordDialog(false, "验证当前密码", null, verifyOld))
+                using (PasswordDialog oldDialog = new PasswordDialog(false, "验证当前密码", null, verifyOld, appSettings.PasswordHint))
                 {
                     if (oldDialog.ShowDialog(this) != DialogResult.OK) return;
                     oldPassword = oldDialog.Value;
@@ -3911,13 +3984,18 @@ namespace FolderSeal
                 {
                     if (newDialog.ShowDialog(this) != DialogResult.OK) return;
                     newPassword = newDialog.Value;
+                    newPasswordHint = AppSettings.NormalizePasswordHint(newDialog.PasswordHint);
                 }
 
                 int totalKnown = catalog.Locations.Count;
                 int availableCount = catalog.Locations.Count(x => Directory.Exists(x.Path) && File.Exists(Path.Combine(x.Path, VaultSession.DataName)));
                 int offlineCount = totalKnown - availableCount;
+                string hintSummaryLine = !String.IsNullOrEmpty(newPasswordHint)
+                    ? "• 新密码提示：" + newPasswordHint + "\r\n"
+                    : (!String.IsNullOrEmpty(appSettings.PasswordHint) ? "• 密码提示：留空（改密完成后将清除旧密码提示）\r\n" : "");
                 string summaryText = "将把目录表密码改用新密码，并对本机已记住且当前可访问的加密文件夹执行密文流改密（不产生临时明文文件）。\r\n\r\n" +
                     "• 已记住加密文件夹：" + totalKnown + " 个（当前可访问 " + availableCount + " 个" + (offlineCount > 0 ? "，离线/不可用 " + offlineCount + " 个" : "") + "）\r\n" +
+                    hintSummaryLine +
                     (!catalog.Scanned ? "• 提示：当前尚未全盘扫描，未记录的加密文件夹仍保留原密码，后续打开时输入原密码即可自动统一。\r\n" : "") +
                     "• 离线目录与外部备份副本不会自动改密；完成后原密码对已更新的目录立即失效。\r\n\r\n确定现在修改密码吗？";
                 if (AppDialog.Show(this, summaryText, "确认修改密码", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.OK)
@@ -3953,6 +4031,8 @@ namespace FolderSeal
                 }
                 else
                 {
+                    appSettings.PasswordHint = newPasswordHint;
+                    try { appSettings.Save(); } catch (Exception) { }
                     lines.Add("统一密码已更新，后续请使用新密码访问密封夹。");
                     lines.Add("已更新加密文件夹：" + rotation.Updated.Count + " 个");
                 }
@@ -4539,7 +4619,8 @@ namespace FolderSeal
         }
         private string AskPassword(bool creating, string title, string targetPath = null)
         {
-            using (PasswordDialog dialog = new PasswordDialog(creating, title, targetPath))
+            string hint = !creating && (title == null || !title.Contains("原密码")) ? appSettings.PasswordHint : null;
+            using (PasswordDialog dialog = new PasswordDialog(creating, title, targetPath, null, hint))
                 return dialog.ShowDialog(this) == DialogResult.OK ? dialog.Value : null;
         }
         private async Task SealFromExplorer(string path)
