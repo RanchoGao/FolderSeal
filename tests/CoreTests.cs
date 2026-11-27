@@ -44,7 +44,7 @@ namespace FolderSeal
             try
             {
                 if (args.Length > 1 && args[1] == "--acl") AclTest();
-                else { PasswordBoundary(); RoundTrip(); Tamper(); PathValidation(); FailureSafety(); CleanupRecovery(); WorkspaceVersionRecovery(); Concurrency(); DeleteAuthentication(); HardLinkTest(); ImportSourceCleanupTest(); }
+                else { PasswordBoundary(); RoundTrip(); Tamper(); PathValidation(); FailureSafety(); CleanupRecovery(); WorkspaceVersionRecovery(); Concurrency(); DeleteAuthentication(); HardLinkTest(); ImportSourceCleanupTest(); DirtyCheckFastLockTest(); }
                 Console.WriteLine("SUCCESS " + checks + " checks");
                 if (report != null) File.WriteAllText(report, "SUCCESS " + checks + " checks\r\n" + DateTime.Now.ToString("s"), Encoding.UTF8);
                 passed = true; return 0;
@@ -64,19 +64,25 @@ namespace FolderSeal
             using (VaultSession vault = Session("password-boundary"))
             {
                 Fails(delegate { vault.Create(""); }, "empty password rejected");
-                Fails(delegate { vault.Create("12345"); }, "five-character password rejected");
-                Assert(!Directory.Exists(vault.Root), "short passwords create no vault directory");
-                vault.Create("123456");
-                Assert(vault.Open, "exactly six characters accepted");
-                File.WriteAllText(Path.Combine(vault.Work, "fixture.txt"), "six-character password fixture");
+                Fails(delegate { vault.Create("1234567"); }, "seven-character password rejected");
+                Fails(delegate { vault.Create("        "); }, "whitespace-only eight-character password rejected");
+                Assert(!Directory.Exists(vault.Root), "short or blank passwords create no vault directory");
+                vault.Create("12345678");
+                Assert(vault.Open, "exactly eight characters accepted");
+                File.WriteAllText(Path.Combine(vault.Work, "fixture.txt"), "eight-character password fixture");
                 vault.Lock();
-                Fails(delegate { vault.Unlock("654321"); }, "incorrect six-character password rejected");
-                vault.Unlock("123456");
-                Assert(File.ReadAllText(Path.Combine(vault.Work, "fixture.txt")) == "six-character password fixture", "six-character password roundtrip");
-                vault.Lock(); vault.Delete("123456");
-                Assert(!Directory.Exists(vault.Root), "six-character password authorizes deletion");
+                Fails(delegate { vault.Unlock("87654321"); }, "incorrect eight-character password rejected");
+                vault.Unlock("12345678");
+                Assert(File.ReadAllText(Path.Combine(vault.Work, "fixture.txt")) == "eight-character password fixture", "eight-character password roundtrip");
+                vault.Lock();
+                Fails(delegate { vault.ChangePassword("12345678", "1234567"); }, "change password rejects seven-character new password");
+                vault.Delete("12345678");
+                Assert(!Directory.Exists(vault.Root), "eight-character password authorizes deletion");
             }
-            Say("minimum six characters, five rejected, correct unlock and authenticated deletion");
+            Assert(PasswordDialog.HintExposesPassword("p a s s w o r d 1", "password1"), "hint check blocks spaced password variant");
+            Assert(PasswordDialog.HintExposesPassword("1drowssap", "password1"), "hint check blocks reversed password variant");
+            Assert(!PasswordDialog.HintExposesPassword("老家楼栋号", "password1"), "hint check allows unrelated clue");
+            Say("minimum eight meaningful characters, seven/whitespace rejected, hint variants blocked, correct unlock and authenticated deletion");
         }
         private static void RoundTrip()
         {
@@ -352,7 +358,169 @@ namespace FolderSeal
                 Assert(!File.Exists(Path.Combine(vault.Work, "removed-from-work.txt")), "removed file is absent from vault");
                 vault.Lock();
             }
+
+            // Regression for WS-2-01 (same-name replacement in workspace must never delete unarchived source A)
+            string dirA = Path.Combine(sources, "same-name-a"), dirB = Path.Combine(sources, "same-name-b");
+            Directory.CreateDirectory(dirA); Directory.CreateDirectory(dirB);
+            string sameA = Path.Combine(dirA, "report.txt"), sameB = Path.Combine(dirB, "report.txt");
+            File.WriteAllText(sameA, "content-A-never-saved", Encoding.UTF8);
+            File.WriteAllText(sameB, "content-B-saved", Encoding.UTF8);
+            using (VaultSession vault = Session("import-same-name-safety"))
+            {
+                vault.Create(Password);
+                vault.ImportFile(sameA, true);
+                File.Delete(Path.Combine(vault.Work, "report.txt"));
+                vault.ImportFile(sameB, true);
+                vault.Lock();
+                Assert(File.Exists(sameA), "replaced same-name original A is preserved when not archived");
+                Assert(!File.Exists(sameB), "archived same-name original B is deleted on lock");
+            }
+
+            // Regression for WS-2-03 (pending source deletions survive cleanup interruption and complete on Resume -> Lock)
+            string resumeSrc = Path.Combine(sources, "resume-delete.txt");
+            File.WriteAllText(resumeSrc, "delete-after-resume", Encoding.UTF8);
+            string interruptedSession;
+            using (VaultSession vault = Session("import-cleanup-resume"))
+            {
+                vault.Create(Password);
+                vault.ImportFile(resumeSrc, true);
+                File.WriteAllText(Path.Combine(vault.Work, "blocker.txt"), "lock-me", Encoding.UTF8);
+                interruptedSession = vault.SessionRoot;
+                using (FileStream hold = new FileStream(Path.Combine(vault.Work, "blocker.txt"), FileMode.Open, FileAccess.Read, FileShare.Read))
+                    Fails(delegate { vault.Lock(); }, "blocked workspace cleanup stops before deleting original source");
+                Assert(vault.CleanupPending && File.Exists(resumeSrc), "source remains intact while cleanup is pending");
+            }
+            using (VaultSession resumed = Session("import-cleanup-resume"))
+            {
+                resumed.Resume(interruptedSession, Password);
+                resumed.Lock();
+                Assert(!File.Exists(resumeSrc), "resumed cleanup finishes pending original source deletion");
+                Assert(resumed.LastSourceDeletedCount == 1, "resumed cleanup reports deleted source count");
+            }
             Say("imported files and folders delete unchanged original plaintext on lock and preserve modified or removed sources");
+        }
+        private static void DirtyCheckFastLockTest()
+        {
+            using (VaultSession vault = Session("dirty-check"))
+            {
+                // 1. Newly created empty vault with no edits skips snapshot on lock.
+                vault.Create(Password);
+                Assert(!vault.HasWorkspaceChanges(), "newly created empty workspace reports clean");
+                byte[] emptyDataHash = Paths.Hash(vault.Data);
+                vault.Lock();
+                Assert(vault.LastLockSkippedSnapshot, "locking untouched newly created vault skips snapshot");
+                Assert(Paths.Equal(emptyDataHash, Paths.Hash(vault.Data)), "untouched newly created vault ciphertext unchanged");
+
+                // Populate initial content with a known past timestamp for deterministic same-size edit testing.
+                vault.Unlock(Password);
+                Directory.CreateDirectory(Path.Combine(vault.Work, "sub"));
+                string note = Path.Combine(vault.Work, "sub", "note.txt");
+                File.WriteAllText(note, "hello", Encoding.UTF8);
+                File.SetLastWriteTimeUtc(note, DateTime.UtcNow.AddMinutes(-10));
+                Assert(vault.HasWorkspaceChanges(), "adding files and directories marks workspace dirty");
+                vault.Lock();
+                Assert(!vault.LastLockSkippedSnapshot, "adding files forces full snapshot");
+
+                // Second edit to ensure BackupName exists and differs from DataName.
+                vault.Unlock(Password);
+                File.WriteAllText(Path.Combine(vault.Work, "extra.txt"), "v2", Encoding.UTF8);
+                vault.Lock();
+                Assert(!vault.LastLockSkippedSnapshot, "second edit rotates backup");
+
+                string backupPath = Path.Combine(vault.Root, VaultSession.BackupName);
+                byte[] dataHash = Paths.Hash(vault.Data);
+                byte[] backupHash = Paths.Hash(backupPath);
+                DateTime dataMtime = File.GetLastWriteTimeUtc(vault.Data);
+
+                // 2. Read-only view + temporary lock file created and deleted (like Office ~$ files) => fast lock.
+                vault.Unlock(Password);
+                Assert(!vault.HasWorkspaceChanges(), "freshly unlocked workspace reports clean");
+                string tempLock = Path.Combine(vault.Work, "sub", "~$note.txt");
+                File.WriteAllText(tempLock, "temp-office-lock", Encoding.UTF8);
+                Assert(vault.HasWorkspaceChanges(), "temporary file marks workspace dirty while present");
+                File.Delete(tempLock);
+                Assert(!vault.HasWorkspaceChanges(), "removing temporary file restores clean state");
+                string workDir = vault.Work;
+                vault.Lock();
+                Assert(vault.LastLockSkippedSnapshot, "unchanged workspace skips snapshot on lock");
+                Assert(!Directory.Exists(workDir) && !vault.Open, "fast lock cleans plaintext workspace and closes session");
+                Assert(Paths.Equal(dataHash, Paths.Hash(vault.Data)) && File.GetLastWriteTimeUtc(vault.Data) == dataMtime, "fast lock leaves current ciphertext untouched");
+                Assert(Paths.Equal(backupHash, Paths.Hash(backupPath)), "fast lock preserves previous backup snapshot");
+
+                // 3. Zero changes but open write handle still blocks lock and preserves workspace.
+                vault.Unlock(Password);
+                string unlockedNote = Path.Combine(vault.Work, "sub", "note.txt");
+                using (FileStream writer = new FileStream(unlockedNote, FileMode.Open, FileAccess.Write, FileShare.ReadWrite))
+                    Fails(delegate { vault.Lock(); }, "open write handle blocks fast lock");
+                Assert(vault.Open && !vault.CleanupPending && File.Exists(unlockedNote), "blocked fast lock preserves unlocked workspace");
+                vault.Lock();
+                Assert(vault.LastLockSkippedSnapshot, "closing write handle allows fast lock");
+
+                // 4. Zero changes but external ciphertext tampering is still caught.
+                vault.Unlock(Password);
+                byte[] savedCipher = File.ReadAllBytes(vault.Data);
+                File.AppendAllText(vault.Data, "tampered");
+                Fails(delegate { vault.Lock(); }, "external ciphertext modification blocks fast lock");
+                Assert(vault.Open && Directory.Exists(vault.Work), "tampered ciphertext preserves workspace");
+                File.WriteAllBytes(vault.Data, savedCipher);
+                vault.Lock();
+                Assert(vault.LastLockSkippedSnapshot, "restoring ciphertext allows fast lock");
+
+                // 5. Zero changes with open read handle enters CleanupPending and resumes cleanly.
+                vault.Unlock(Password);
+                string cleanupSession = vault.SessionRoot;
+                using (FileStream reader = new FileStream(Path.Combine(vault.Work, "extra.txt"), FileMode.Open, FileAccess.Read, FileShare.Read))
+                    Fails(delegate { vault.Lock(); }, "open read handle prevents fast-lock plaintext deletion");
+                Assert(vault.CleanupPending && vault.LastLockSkippedSnapshot && vault.Open, "fast lock enters pending cleanup on read handle");
+                vault.Lock();
+                Assert(!Directory.Exists(cleanupSession) && !vault.Open, "retrying cleanup completes fast lock");
+                Assert(Paths.Equal(dataHash, Paths.Hash(vault.Data)), "cleanup retry leaves ciphertext untouched");
+
+                // 6. Same-size content modification triggers full snapshot.
+                vault.Unlock(Password);
+                string sameSizeNote = Path.Combine(vault.Work, "sub", "note.txt");
+                File.WriteAllText(sameSizeNote, "WORLD", Encoding.UTF8);
+                Assert(vault.HasWorkspaceChanges(), "same-size edit with updated timestamp marks workspace dirty");
+                vault.Lock();
+                Assert(!vault.LastLockSkippedSnapshot, "same-size edit forces full snapshot");
+
+                // 7. Case-only rename triggers full snapshot.
+                vault.Unlock(Password);
+                string renamedNote = Path.Combine(vault.Work, "sub", "Note.txt");
+                File.Move(Path.Combine(vault.Work, "sub", "note.txt"), renamedNote);
+                Assert(vault.HasWorkspaceChanges(), "case-only rename marks workspace dirty");
+                vault.Lock();
+                Assert(!vault.LastLockSkippedSnapshot, "case-only rename forces full snapshot");
+
+                // 8. Empty directory addition and deletion trigger full snapshot.
+                vault.Unlock(Password);
+                Directory.CreateDirectory(Path.Combine(vault.Work, "empty-dir"));
+                Assert(vault.HasWorkspaceChanges(), "adding empty directory marks workspace dirty");
+                vault.Lock();
+                Assert(!vault.LastLockSkippedSnapshot, "adding empty directory forces full snapshot");
+
+                vault.Unlock(Password);
+                Directory.Delete(Path.Combine(vault.Work, "empty-dir"));
+                Assert(vault.HasWorkspaceChanges(), "deleting empty directory marks workspace dirty");
+                vault.Lock();
+                Assert(!vault.LastLockSkippedSnapshot, "deleting empty directory forces full snapshot");
+
+                // 9. Resumed workspace conservatively forces full snapshot even without further edits.
+                vault.Unlock(Password);
+                string abandoned = vault.SessionRoot;
+                vault.Dispose();
+                vault.Resume(abandoned, Password);
+                Assert(vault.HasWorkspaceChanges(), "resumed workspace conservatively reports dirty");
+                vault.Lock();
+                Assert(!vault.LastLockSkippedSnapshot, "resumed workspace forces full snapshot");
+
+                // Final integrity verification.
+                vault.Unlock(Password);
+                Assert(File.ReadAllText(Path.Combine(vault.Work, "sub", "Note.txt"), Encoding.UTF8) == "WORLD", "all edits persisted after mixed fast and full locks");
+                vault.Lock();
+                Assert(vault.LastLockSkippedSnapshot, "final read-only verification fast-locks cleanly");
+            }
+            Say("dirty-check fast lock skips snapshot when unchanged and safely falls back on edits, handles, tampering and recovery");
         }
         [StructLayout(LayoutKind.Sequential)] private struct SidAndAttributes { public IntPtr Sid; public uint Attributes; }
         [DllImport("advapi32.dll", SetLastError = true)]

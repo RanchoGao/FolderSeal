@@ -1,0 +1,629 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>密封夹（FolderSeal）· 设计系统规范手册</title>
+<link rel="stylesheet" href="./tokens.css">
+<link rel="stylesheet" href="./components.css">
+<style>
+  body {
+    margin: 0;
+    background: var(--surface);
+    color: var(--ink);
+    font: var(--text-body)/1.6 var(--font-ui);
+    -webkit-font-smoothing: antialiased;
+  }
+  .ds-shell {
+    display: grid;
+    grid-template-columns: 240px minmax(0, 1fr);
+    min-height: 100vh;
+  }
+  .ds-nav {
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow: auto;
+    background: var(--canvas);
+    border-right: 1px solid var(--line);
+    padding: 22px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+  .ds-brand { display: flex; align-items: center; gap: 10px; }
+  .ds-logo {
+    width: 36px; height: 36px; border-radius: var(--r-md);
+    background: var(--primary-tint); border: 1px solid var(--primary-border);
+    display: grid; place-items: center; overflow: hidden; flex: none;
+  }
+  .ds-logo img { width: 30px; height: 30px; object-fit: contain; display: block; }
+  .ds-brand-title { font-size: 16px; font-weight: 700; color: var(--primary); line-height: 1.2; }
+  .ds-brand-sub { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+  .ds-nav-group { display: flex; flex-direction: column; gap: 3px; }
+  .ds-nav-label { font-size: 11px; font-weight: 700; color: var(--muted-2); text-transform: uppercase; letter-spacing: .06em; padding: 0 8px 4px; }
+  .ds-nav a {
+    display: block; padding: 7px 10px; border-radius: var(--r-sm);
+    color: var(--muted); text-decoration: none; font-size: 13px; font-weight: 500;
+  }
+  .ds-nav a:hover { background: var(--surface); color: var(--primary); }
+  .ds-nav-foot { margin-top: auto; padding-top: 12px; border-top: 1px solid var(--line-soft); font-size: 11.5px; color: var(--muted-2); line-height: 1.55; }
+
+  .ds-main { max-width: 1080px; width: 100%; margin: 0 auto; padding: 32px 36px 80px; }
+  .ds-hero {
+    background: var(--canvas); border: 1px solid var(--line); border-radius: var(--r-lg);
+    padding: 26px 28px; margin-bottom: 28px; display: flex; flex-wrap: wrap;
+    align-items: center; justify-content: space-between; gap: 18px;
+  }
+  .ds-hero h1 { margin: 0; font-size: 24px; font-weight: 750; color: var(--ink); }
+  .ds-hero p { margin: 6px 0 0; color: var(--muted); max-width: 620px; font-size: 13.5px; }
+  .ds-pill-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+
+  .ds-section { margin-bottom: 40px; scroll-margin-top: 20px; }
+  .ds-section-head { margin-bottom: 14px; }
+  .ds-section-head h2 { margin: 0; font-size: 18px; font-weight: 700; color: var(--ink); }
+  .ds-section-head p { margin: 4px 0 0; font-size: 13px; color: var(--muted); }
+
+  .ds-panel {
+    background: var(--canvas); border: 1px solid var(--line); border-radius: var(--r-card);
+    padding: 20px; margin-bottom: 14px;
+  }
+  .ds-subhead { margin: 0 0 12px; font-size: 13.5px; font-weight: 650; color: var(--ink); display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+
+  /* 色板 */
+  .swatch-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(175px, 1fr)); gap: 10px; }
+  .swatch {
+    border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden;
+    background: var(--canvas); cursor: pointer; text-align: left; padding: 0; transition: .15s;
+  }
+  .swatch:hover { border-color: var(--primary); box-shadow: var(--shadow-card-hover); transform: translateY(-1px); }
+  .swatch-color { height: 54px; border-bottom: 1px solid var(--line-soft); }
+  .swatch-meta { padding: 8px 10px; }
+  .swatch-name { font-size: 12.5px; font-weight: 650; color: var(--ink); display: block; }
+  .swatch-var { font-size: 11px; font-family: var(--font-mono); color: var(--muted); display: block; margin-top: 2px; }
+  .swatch-hex { font-size: 11px; font-family: var(--font-mono); color: var(--muted-2); }
+
+  /* 排版与尺寸表 */
+  .ds-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .ds-table th {
+    text-align: left; font-size: 12px; font-weight: 600; color: var(--muted);
+    background: var(--surface); padding: 9px 12px; border-bottom: 1px solid var(--line);
+  }
+  .ds-table td { padding: 10px 12px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
+  .ds-table tr:last-child td { border-bottom: 0; }
+  .code-tag { font-family: var(--font-mono); font-size: 11.5px; background: var(--surface); border: 1px solid var(--line-soft); padding: 1px 6px; border-radius: 4px; color: var(--ink); }
+
+  .token-vis-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 12px; }
+  .vis-card { border: 1px solid var(--line-soft); border-radius: var(--r-md); padding: 12px; background: var(--surface-subtle); text-align: center; }
+  .rad-box { width: 52px; height: 52px; margin: 0 auto 8px; background: var(--primary-tint); border: 1.5px solid var(--primary); }
+  .sp-bar { height: 12px; background: var(--primary); border-radius: 3px; margin: 12px auto 10px; }
+
+  /* 组件演示区 */
+  .demo-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+  .demo-col { display: flex; flex-direction: column; gap: 10px; }
+  .demo-grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+
+  @media (max-width: 860px) {
+    .ds-shell { grid-template-columns: 1fr; }
+    .ds-nav { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+    .ds-main { padding: 20px 18px 60px; }
+    .demo-grid-2 { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<svg style="display:none" aria-hidden="true"><defs>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-folders" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
+  <symbol id="i-unlock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.6-1.7"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 24 24"><path d="M10.3 4.3 2.8 17.5A2 2 0 0 0 4.5 20h15a2 2 0 0 0 1.7-2.5L13.7 4.3a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 16.5h.01"/></symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V5M7 10l5-5 5 5M4 19h16"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.8-6.5 10-6.5S22 12 22 12s-3.8 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.8"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></symbol>
+  <symbol id="i-ext" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4 10 14M10 5H5a1 1 0 0 0-1 1v13a1 1 0 0 0 1 1h13a1 1 0 0 0 1-1v-5"/></symbol>
+</defs></svg>
+
+<div class="ds-shell">
+  <aside class="ds-nav">
+    <div class="ds-brand">
+      <div class="ds-logo">
+        <img src="../../../assets/FolderSeal.png" alt="密封夹" onerror="this.style.display='none'">
+      </div>
+      <div>
+        <div class="ds-brand-title">密封夹设计系统</div>
+        <div class="ds-brand-sub">FolderSeal Design System</div>
+      </div>
+    </div>
+
+    <div class="ds-nav-group">
+      <div class="ds-nav-label">基础规范 Foundations</div>
+      <a href="#colors">色彩系统与官网变体</a>
+      <a href="#typography">字体与排版阶梯</a>
+      <a href="#geometry">圆角、间距与尺寸</a>
+    </div>
+
+    <div class="ds-nav-group">
+      <div class="ds-nav-label">核心组件 Components</div>
+      <a href="#buttons">按钮体系 SealButton</a>
+      <a href="#status">状态徽章与语义横幅</a>
+      <a href="#forms">表单、强度条与开关</a>
+      <a href="#cards">首页卡片与拖放区</a>
+      <a href="#files">文件列表与类型色标</a>
+      <a href="#overlays">弹窗、菜单与轻提示</a>
+      <a href="#marketing">官网深色 Hero 变体</a>
+    </div>
+
+    <div class="ds-nav-group">
+      <div class="ds-nav-label">交互规范 Patterns</div>
+      <a href="#states">六大业务状态映射</a>
+    </div>
+
+    <div class="ds-nav-foot">
+      单一数据源：<span class="code-tag">tokens.json</span><br>
+      同步命令：<span class="code-tag">.\scripts\sync-design-tokens.ps1</span>
+    </div>
+  </aside>
+
+  <main class="ds-main">
+    <header class="ds-hero">
+      <div>
+        <h1>密封夹（FolderSeal）设计系统</h1>
+        <p>面向 Windows 桌面端（WinForms）、Web 交互原型与产品介绍页的统一视觉规范。调整 <span class="code-tag">tokens.json</span> 后运行同步脚本，即可一键驱动全产品视觉更新。</p>
+        <div class="ds-pill-row">
+          <span class="badge green">深绿安全基调</span>
+          <span class="badge amber">明文琥珀警示</span>
+          <span class="badge neutral">WinForms + Web 双端同步</span>
+        </div>
+      </div>
+      <div class="demo-row">
+        <button class="btn btn-primary" id="copySyncCmd">复制同步命令</button>
+        <a class="btn" href="./README.md">查看维护文档</a>
+      </div>
+    </header>
+
+    <!-- 1. 色彩系统 -->
+    <section class="ds-section" id="colors">
+      <div class="ds-section-head">
+        <h2>色彩系统</h2>
+        <p>点击任意色块可复制对应 CSS 变量名，用于样式复用或对照 <span class="code-tag">UiTheme</span> 常量。</p>
+      </div>
+
+      <div class="ds-panel">
+        <h3 class="ds-subhead">品牌主色 Brand（安全、主操作、已锁定）</h3>
+        <div class="swatch-grid" data-swatches="brand"></div>
+      </div>
+
+      <div class="ds-panel">
+        <h3 class="ds-subhead">中性色 Neutral（画布、表面层级、文本与分割线）</h3>
+        <div class="swatch-grid" data-swatches="neutral"></div>
+      </div>
+
+      <div class="ds-panel">
+        <h3 class="ds-subhead">语义状态色 Semantic（已解锁琥珀提醒 / 错误与危险红）</h3>
+        <div class="swatch-grid" data-swatches="semantic"></div>
+      </div>
+
+      <div class="ds-panel">
+        <h3 class="ds-subhead">官网宣传变体 Marketing（产品介绍页深色首屏与青柠 CTA）</h3>
+        <div class="swatch-grid" data-swatches="marketing"></div>
+      </div>
+    </section>
+
+    <!-- 2. 字体与排版 -->
+    <section class="ds-section" id="typography">
+      <div class="ds-section-head">
+        <h2>字体与排版阶梯</h2>
+        <p>桌面端统一使用 <span class="code-tag">Microsoft YaHei UI</span>（96 DPI 下 Web px 与 WinForms pt 对照），路径/快捷键辅以等宽字体。</p>
+      </div>
+      <div class="ds-panel" style="padding:0;overflow:hidden">
+        <table class="ds-table">
+          <thead>
+            <tr><th style="width:18%">Token</th><th style="width:16%">Web 字号</th><th style="width:16%">WinForms</th><th>示例效果</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><span class="code-tag">--text-headline</span></td><td>21px</td><td>15 pt</td><td style="font-size:var(--text-headline);font-weight:700">从一个加密文件夹开始</td></tr>
+            <tr><td><span class="code-tag">--text-brand</span></td><td>19px</td><td>14 pt</td><td style="font-size:var(--text-brand);font-weight:700;color:var(--primary)">密封夹 FolderSeal</td></tr>
+            <tr><td><span class="code-tag">--text-title</span></td><td>17px</td><td>12 pt</td><td style="font-size:var(--text-title);font-weight:700">季度财务与合同资料</td></tr>
+            <tr><td><span class="code-tag">--text-title-sm</span></td><td>15px</td><td>10.5 pt</td><td style="font-size:var(--text-title-sm);font-weight:600">文件已锁定</td></tr>
+            <tr><td><span class="code-tag">--text-body-lg</span></td><td>14.5px</td><td>10 pt</td><td style="font-size:var(--text-body-lg);font-weight:600">创建加密文件夹</td></tr>
+            <tr><td><span class="code-tag">--text-body</span></td><td>13.5px</td><td>9.5 pt</td><td style="font-size:var(--text-body)">所有文件在本机 NTFS 加密保存，一个密码管理全部资料。</td></tr>
+            <tr><td><span class="code-tag">--text-body-sm</span></td><td>12.5px</td><td>9 pt</td><td style="font-size:var(--text-body-sm);color:var(--muted)">双击文件直接编辑，保存并关闭外部软件后再点击“保存并锁定”。</td></tr>
+            <tr><td><span class="code-tag">--text-caption</span></td><td>12px</td><td>8.5 pt</td><td style="font-size:var(--text-caption);color:var(--muted-2)">密码只在本机处理，操作结束后释放；忘记密码无法恢复。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 3. 圆角、间距与尺寸 -->
+    <section class="ds-section" id="geometry">
+      <div class="ds-section-head">
+        <h2>圆角、间距与控件尺寸</h2>
+        <p>采用温和克制的 6–12px 桌面圆角与 4px 基准间距体系。</p>
+      </div>
+      <div class="ds-panel">
+        <h3 class="ds-subhead">圆角 Radius</h3>
+        <div class="token-vis-grid">
+          <div class="vis-card"><div class="rad-box" style="border-radius:var(--r-sm)"></div><span class="code-tag">--r-sm</span><div class="swatch-hex">6px · 按钮/输入框</div></div>
+          <div class="vis-card"><div class="rad-box" style="border-radius:var(--r-md)"></div><span class="code-tag">--r-md</span><div class="swatch-hex">8px · 横幅/菜单/表格</div></div>
+          <div class="vis-card"><div class="rad-box" style="border-radius:var(--r-card)"></div><span class="code-tag">--r-card</span><div class="swatch-hex">10px · 首页卡片</div></div>
+          <div class="vis-card"><div class="rad-box" style="border-radius:var(--r-lg)"></div><span class="code-tag">--r-lg</span><div class="swatch-hex">12px · 窗口/弹窗</div></div>
+          <div class="vis-card"><div class="rad-box" style="border-radius:var(--r-hero)"></div><span class="code-tag">--r-hero</span><div class="swatch-hex">24px · 官网 Hero</div></div>
+          <div class="vis-card"><div class="rad-box" style="border-radius:var(--r-pill)"></div><span class="code-tag">--r-pill</span><div class="swatch-hex">999px · 徽章/开关</div></div>
+        </div>
+      </div>
+      <div class="ds-panel">
+        <h3 class="ds-subhead">间距 Spacing</h3>
+        <div class="token-vis-grid">
+          <div class="vis-card"><div class="sp-bar" style="width:var(--sp-xs)"></div><span class="code-tag">--sp-xs</span><div class="swatch-hex">4px</div></div>
+          <div class="vis-card"><div class="sp-bar" style="width:var(--sp-sm)"></div><span class="code-tag">--sp-sm</span><div class="swatch-hex">8px</div></div>
+          <div class="vis-card"><div class="sp-bar" style="width:var(--sp-md)"></div><span class="code-tag">--sp-md</span><div class="swatch-hex">12px</div></div>
+          <div class="vis-card"><div class="sp-bar" style="width:var(--sp-lg)"></div><span class="code-tag">--sp-lg</span><div class="swatch-hex">16px</div></div>
+          <div class="vis-card"><div class="sp-bar" style="width:var(--sp-xl)"></div><span class="code-tag">--sp-xl</span><div class="swatch-hex">20px</div></div>
+          <div class="vis-card"><div class="sp-bar" style="width:var(--sp-2xl)"></div><span class="code-tag">--sp-2xl</span><div class="swatch-hex">28px</div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 4. 按钮体系 -->
+    <section class="ds-section" id="buttons">
+      <div class="ds-section-head">
+        <h2>按钮体系 SealButton</h2>
+        <p>对应 WinForms <span class="code-tag">ActionButton</span> 的五种语义 <span class="code-tag">ButtonTone</span>，单界面仅保留一个 Primary 主按钮。</p>
+      </div>
+      <div class="ds-panel">
+        <div class="ds-subhead">
+          <span>标准尺寸（36px）与小尺寸（31px）</span>
+          <label style="font-size:12px;font-weight:500;color:var(--muted);display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="checkbox" id="toggleBtnDisabled"> 预览禁用态
+          </label>
+        </div>
+        <div class="demo-row" id="btnDemoRow">
+          <button class="btn btn-primary"><svg class="fs-icon"><use href="#i-lock"/></svg>保存并锁定</button>
+          <button class="btn"><svg class="fs-icon"><use href="#i-folders"/></svg>我的加密文件夹</button>
+          <button class="btn btn-tint"><svg class="fs-icon"><use href="#i-ext"/></svg>在资源管理器中打开</button>
+          <button class="btn btn-danger"><svg class="fs-icon"><use href="#i-trash"/></svg>确认永久删除</button>
+          <button class="btn btn-ghost">次要幽灵操作</button>
+          <button class="btn btn-sm"><svg class="fs-icon"><use href="#i-plus"/></svg>导入文件 (sm)</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 5. 状态徽章与语义横幅 -->
+    <section class="ds-section" id="status">
+      <div class="ds-section-head">
+        <h2>状态徽章与语义横幅</h2>
+        <p>对应 WinForms <span class="code-tag">StatusPill</span> 与 <span class="code-tag">NoticeCard</span>，始终由圆点/图标 + 文案共同表达状态。</p>
+      </div>
+      <div class="ds-panel">
+        <h3 class="ds-subhead">StatusPill &amp; DotPill</h3>
+        <div class="demo-row">
+          <span class="badge green">已锁定</span>
+          <span class="badge amber">已解锁</span>
+          <span class="badge red">保存失败</span>
+          <span class="badge neutral">保存处理中</span>
+          <span class="dot-pill">已启用</span>
+          <span class="dot-pill off">v2.10.0</span>
+          <span class="dot-pill new">发现新版本</span>
+        </div>
+      </div>
+      <div class="ds-panel demo-col">
+        <div class="notice green slim">
+          <svg class="fs-icon"><use href="#i-lock"/></svg>
+          <div class="notice-body"><div class="notice-text"><strong>已锁定：</strong>文件已加密保存并受权限保护，锁定时彻底隐藏文件名称与数量。</div></div>
+        </div>
+        <div class="notice amber slim">
+          <svg class="fs-icon"><use href="#i-info"/></svg>
+          <div class="notice-body"><div class="notice-text"><strong>已解锁：</strong>当前为临时明文编辑区，请保存并关闭外部软件后再点击“保存并锁定”。</div></div>
+        </div>
+        <div class="notice red">
+          <svg class="fs-icon"><use href="#i-warn"/></svg>
+          <div class="notice-body">
+            <div class="notice-title">保存失败：编辑区资料完整保留</div>
+            <div class="notice-text">检测到 Word 正在占用「2026年Q3财务汇总.docx」，请先关闭占用程序后重试保存。</div>
+          </div>
+        </div>
+        <div class="notice">
+          <svg class="fs-icon"><use href="#i-info"/></svg>
+          <div class="notice-body">
+            <div class="notice-title">正在保存并锁定（阶段进度不编造虚假百分比）</div>
+            <div class="steps">
+              <span class="step done">1 生成新密文</span>
+              <span class="step active">2 逐文件核验 SHA-256</span>
+              <span class="step">3 清理明文编辑区</span>
+            </div>
+            <div class="progress-track"><div class="progress-bar"></div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 6. 表单与开关 -->
+    <section class="ds-section" id="forms">
+      <div class="ds-section-head">
+        <h2>表单控件、密码强度条与开关</h2>
+        <p>用于创建加密文件夹、首次设密、密码验证及右键菜单设置弹窗。</p>
+      </div>
+      <div class="ds-panel demo-grid-2">
+        <div>
+          <div class="field">
+            <label for="demoPwd">设置密码（交互预览强度条）</label>
+            <div class="input-row">
+              <input class="input with-eye" id="demoPwd" type="password" placeholder="请输入至少 8 位密码…">
+              <button class="eye-btn" id="demoEye" type="button" title="显示或隐藏密码"><svg class="fs-icon"><use href="#i-eye"/></svg></button>
+            </div>
+            <div class="meter"><div class="meter-fill" id="demoMeter"></div></div>
+            <div class="field-hint"><span id="demoPwdHint">建议不少于 8 位，本地处理无云端找回</span><span class="kbd">Alt + L</span></div>
+          </div>
+          <div class="field">
+            <label>只读目标路径</label>
+            <input class="input" type="text" readonly value="D:\工作文档\季度财务与合同资料">
+          </div>
+        </div>
+        <div class="demo-col">
+          <label class="check-card">
+            <input type="checkbox" checked>
+            <div>
+              <strong>创建后保持解锁，立即导入文件</strong>
+              <span>省去再次验证密码的步骤，导入完成后点击“保存并锁定”即可。</span>
+            </div>
+          </label>
+          <div class="ds-panel" style="margin:0;padding:14px 16px;display:flex;align-items:center;justify-content:space-between;gap:12px">
+            <div>
+              <strong style="font-size:13.5px;display:block">资源管理器右键快捷加密</strong>
+              <span style="font-size:12px;color:var(--muted)">在文件或文件夹右键菜单中直接触发原地加密</span>
+            </div>
+            <button class="switch on" id="demoSwitch" type="button" aria-label="切换开关"></button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 7. 首页卡片与拖放区 -->
+    <section class="ds-section" id="cards">
+      <div class="ds-section-head">
+        <h2>首页行动卡片与拖放密封区</h2>
+        <p>对应 WinForms <span class="code-tag">HomeActionCard</span>（实线行动卡 + 虚线拖放卡）。</p>
+      </div>
+      <div class="ds-panel demo-col">
+        <div class="demo-grid-2">
+          <button class="action-card" type="button">
+            <div class="card-ico"><svg class="fs-icon"><use href="#i-plus"/></svg></div>
+            <strong>创建加密文件夹</strong>
+            <span>选择存放位置并命名，支持创建后立即解锁导入资料，自动生成密封夹图标入口。</span>
+            <span class="card-go">立即创建 →</span>
+          </button>
+          <button class="action-card" type="button">
+            <div class="card-ico"><svg class="fs-icon"><use href="#i-folders"/></svg></div>
+            <strong>打开我的加密文件夹</strong>
+            <span>验证密码后查看本机所有加密资料，按最近打开排序，也支持按路径打开或扫描。</span>
+            <span class="card-go">验证并查看 →</span>
+          </button>
+        </div>
+        <div class="drop-seal">
+          <div class="drop-seal-title"><svg class="fs-icon" style="color:var(--primary)"><use href="#i-upload"/></svg>拖入文件或文件夹到这里，直接原地加密</div>
+          <div class="drop-seal-sub">加密核验并生成密封夹入口后，自动清理原位置明文</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 8. 文件列表与类型图标 -->
+    <section class="ds-section" id="files">
+      <div class="ds-section-head">
+        <h2>文件列表与类型色标</h2>
+        <p>8 类文件色标在 Web（<span class="code-tag">.ftype.*</span>）与 WinForms（<span class="code-tag">CreateFileTypeGlyph</span>）间保持完全一致。</p>
+      </div>
+      <div class="ds-panel demo-col">
+        <div class="demo-row">
+          <span class="ftype doc">DOC</span>
+          <span class="ftype xls">XLS</span>
+          <span class="ftype ppt">PPT</span>
+          <span class="ftype pdf">PDF</span>
+          <span class="ftype md">MD</span>
+          <span class="ftype img">IMG</span>
+          <span class="ftype zip">ZIP</span>
+          <span class="ftype other">FILE</span>
+        </div>
+        <div class="file-box">
+          <table class="file-table">
+            <thead><tr><th style="width:58%">名称</th><th style="width:18%">大小</th><th style="width:24%">修改时间</th></tr></thead>
+            <tbody>
+              <tr class="selected"><td><div class="file-cell"><span class="ftype doc">DOC</span><span>2026年Q3财务汇总.docx</span></div></td><td class="dim">248 KB</td><td class="dim">2026-11-20 14:32</td></tr>
+              <tr><td><div class="file-cell"><span class="ftype xls">XLS</span><span>年度预算明细表.xlsx</span></div></td><td class="dim">1.4 MB</td><td class="dim">2026-11-18 09:15</td></tr>
+              <tr><td><div class="file-cell"><span class="ftype pdf">PDF</span><span>房屋租赁协议扫描件.pdf</span></div></td><td class="dim">3.8 MB</td><td class="dim">2026-11-12 18:04</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 9. 弹窗、菜单与轻提示 -->
+    <section class="ds-section" id="overlays">
+      <div class="ds-section-head">
+        <h2>弹窗骨架、下拉菜单与轻提示</h2>
+        <p>统一所有子弹窗的标题栏、内容留白与底部浅色操作栏，危险操作置底隔离。</p>
+      </div>
+      <div class="demo-grid-2">
+        <div class="dialog-win">
+          <div class="dlg-titlebar"><span>确认永久删除加密文件夹</span><span style="color:var(--muted-2)">✕</span></div>
+          <div class="dlg-body">
+            <div class="notice red slim" style="margin-bottom:12px">
+              <svg class="fs-icon"><use href="#i-warn"/></svg>
+              <div class="notice-body"><div class="notice-text">此操作不可撤销，删除后不进入回收站。</div></div>
+            </div>
+            <div class="field">
+              <label>验证密码</label>
+              <input class="input" type="password" value="••••••••">
+            </div>
+          </div>
+          <div class="dlg-footer">
+            <button class="btn btn-sm" type="button">取消</button>
+            <button class="btn btn-sm btn-danger" type="button">确认永久删除</button>
+          </div>
+        </div>
+
+        <div class="ds-panel demo-col" style="justify-content:space-between">
+          <div>
+            <h3 class="ds-subhead">更多操作菜单（危险项分区）</h3>
+            <div class="more-menu">
+              <button class="menu-item" type="button"><span>恢复未锁定工作区</span><span style="font-size:11px;color:var(--muted-2)">需先锁定</span></button>
+              <button class="menu-item" type="button"><span>创建或修复密封夹入口…</span><span style="font-size:11px;color:var(--muted-2)">需先锁定</span></button>
+              <div class="menu-sep"></div>
+              <button class="menu-item danger" type="button"><span>永久删除加密文件夹…</span><span style="font-size:11px;color:var(--muted-2)">需先锁定</span></button>
+            </div>
+          </div>
+          <div>
+            <button class="btn btn-tint" id="demoToastBtn" type="button">触发 Toast 轻提示</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 10. 官网深色 Hero 变体 -->
+    <section class="ds-section" id="marketing">
+      <div class="ds-section-head">
+        <h2>官网宣传变体 Marketing Surface</h2>
+        <p>产品介绍页在深森林绿底色（<span class="code-tag">--mkt-forest</span>）上使用高对比青柠主按钮（<span class="code-tag">--mkt-lime</span>），与桌面端共享同一品牌色脉。</p>
+      </div>
+      <div class="mkt-hero">
+        <div style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--mkt-lime);font-weight:700;margin-bottom:8px">MARKETING HERO VARIANT</div>
+        <h3 style="margin:0;font-size:30px;line-height:1.2;font-weight:800">给 Windows 本地文件夹加密</h3>
+        <p style="margin:10px 0 20px;max-width:460px;font-size:14.5px">输入密码打开资料，用熟悉的软件编辑，完成后保存并锁定。</p>
+        <div class="demo-row">
+          <a class="mkt-btn-primary" href="#marketing" onclick="return false">查看 Windows 下载</a>
+          <a class="mkt-btn-secondary" href="#marketing" onclick="return false">查看使用方法</a>
+        </div>
+      </div>
+    </section>
+
+    <!-- 11. 六大业务状态映射 -->
+    <section class="ds-section" id="states">
+      <div class="ds-section-head">
+        <h2>桌面端六大业务状态视觉映射</h2>
+        <p>确保开发与设计在所有状态下对徽章色、横幅色、主操作按钮和列表可见性保持一致。</p>
+      </div>
+      <div class="ds-panel" style="padding:0;overflow:hidden">
+        <table class="ds-table">
+          <thead>
+            <tr><th>业务状态</th><th>状态徽章</th><th>提示横幅</th><th>右上角主按钮</th><th>文件列表</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><strong>首页（未选择）</strong></td><td>无</td><td>按需显示遗留工作区琥珀提醒条</td><td>两张行动卡 + 拖放区</td><td>不显示</td></tr>
+            <tr><td><strong>已锁定</strong></td><td><span class="badge green">已锁定</span></td><td>绿底/常规简要说明</td><td><span class="code-tag">Primary</span> 解锁文件夹</td><td>隐藏文件名与数量（锁图标空态）</td></tr>
+            <tr><td><strong>已解锁（日常编辑）</strong></td><td><span class="badge amber">已解锁</span></td><td>琥珀底明文编辑区提示</td><td><span class="code-tag">Primary</span> 保存并锁定</td><td>完整显示，支持双击/筛选/拖放</td></tr>
+            <tr><td><strong>保存处理中</strong></td><td><span class="badge neutral">保存处理中</span></td><td>常规底 + 三阶段步骤条 + 进度条</td><td>禁用（防中断）</td><td>只读锁定</td></tr>
+            <tr><td><strong>保存失败（占用）</strong></td><td><span class="badge red">保存失败</span></td><td>红底错误原因 + 明确告知明文仍保留</td><td><span class="code-tag">Primary</span> 重试保存并锁定</td><td>保留编辑区列表</td></tr>
+            <tr><td><strong>密文已保存·待清理</strong></td><td><span class="badge amber">待清理明文</span></td><td>琥珀底说明新密文已安全落盘</td><td><span class="code-tag">Primary</span> 重试清理编辑区</td><td>禁止继续编辑与导入</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="toast" id="dsToast" hidden></div>
+
+<script>
+const SWATCHES = {
+  brand: [
+    ['主绿 Primary', '--primary'],
+    ['主绿悬停 Hover', '--primary-hover'],
+    ['主绿按下 Active', '--primary-active'],
+    ['浅绿底 Tint', '--primary-tint'],
+    ['浅绿悬停', '--primary-tint-hover'],
+    ['主绿边框 Border', '--primary-border'],
+    ['主按钮禁用底', '--primary-disabled-bg']
+  ],
+  neutral: [
+    ['画布 Canvas', '--canvas'],
+    ['表面 Surface', '--surface'],
+    ['次表面 Surface 2', '--surface-2'],
+    ['主文本 Ink', '--ink'],
+    ['次文本 Muted', '--muted'],
+    ['弱文本 Muted 2', '--muted-2'],
+    ['标准边框 Line', '--line'],
+    ['浅分割线 Line Soft', '--line-soft'],
+    ['拖放虚线 Dashed', '--dashed-border']
+  ],
+  semantic: [
+    ['琥珀文本 Amber', '--amber'],
+    ['琥珀浅底', '--amber-bg'],
+    ['琥珀边框', '--amber-border'],
+    ['琥珀色条 Bar', '--amber-bar'],
+    ['警示红 Red', '--red'],
+    ['红底 Red Bg', '--red-bg'],
+    ['红边框 Red Border', '--red-border']
+  ],
+  marketing: [
+    ['纸感底 Paper', '--mkt-paper'],
+    ['深森林绿 Forest', '--mkt-forest'],
+    ['光晕绿 Glow', '--mkt-forest-glow'],
+    ['官网绿 Green', '--mkt-green'],
+    ['青柠 CTA Lime', '--mkt-lime'],
+    ['深底正文 On Dark', '--mkt-on-dark'],
+    ['特性带底 Band', '--mkt-feature-band']
+  ]
+};
+
+const rootStyles = getComputedStyle(document.documentElement);
+let toastTimer;
+function showToast(msg) {
+  const el = document.getElementById('dsToast');
+  el.textContent = msg;
+  el.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.hidden = true; }, 2200);
+}
+
+for (const [group, items] of Object.entries(SWATCHES)) {
+  const host = document.querySelector(`[data-swatches="${group}"]`);
+  if (!host) continue;
+  for (const [label, cssVar] of items) {
+    const val = rootStyles.getPropertyValue(cssVar).trim();
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'swatch';
+    btn.innerHTML = `<div class="swatch-color" style="background:var(${cssVar})"></div><div class="swatch-meta"><span class="swatch-name">${label}</span><span class="swatch-var">${cssVar}</span><span class="swatch-hex">${val}</span></div>`;
+    btn.addEventListener('click', () => {
+      if (navigator.clipboard) navigator.clipboard.writeText(`var(${cssVar})`).catch(() => {});
+      showToast(`已复制 var(${cssVar})（${val}）`);
+    });
+    host.appendChild(btn);
+  }
+}
+
+document.getElementById('copySyncCmd').addEventListener('click', () => {
+  const cmd = '.\\scripts\\sync-design-tokens.ps1';
+  if (navigator.clipboard) navigator.clipboard.writeText(cmd).catch(() => {});
+  showToast(`已复制：${cmd}`);
+});
+
+document.getElementById('toggleBtnDisabled').addEventListener('change', (e) => {
+  document.querySelectorAll('#btnDemoRow button').forEach(b => { b.disabled = e.target.checked; });
+});
+
+const pwdInput = document.getElementById('demoPwd');
+const meter = document.getElementById('demoMeter');
+const pwdHint = document.getElementById('demoPwdHint');
+pwdInput.addEventListener('input', () => {
+  const len = pwdInput.value.length;
+  const pct = Math.min(100, Math.round((len / 12) * 100));
+  meter.style.width = pct + '%';
+  meter.classList.toggle('ok', len >= 8);
+  pwdHint.textContent = len === 0 ? '建议不少于 8 位，本地处理无云端找回' : len >= 8 ? `当前 ${len} 位，满足建议长度` : `还需至少 ${8 - len} 位`;
+  pwdHint.classList.toggle('field-ok', len >= 8);
+});
+document.getElementById('demoEye').addEventListener('click', () => {
+  pwdInput.type = pwdInput.type === 'password' ? 'text' : 'password';
+});
+document.getElementById('demoSwitch').addEventListener('click', (e) => {
+  e.currentTarget.classList.toggle('on');
+});
+document.getElementById('demoToastBtn').addEventListener('click', () => {
+  showToast('已复制路径到剪贴板 · Toast 预览');
+});
+</script>
+</body>
+</html>

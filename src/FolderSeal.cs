@@ -146,6 +146,7 @@ namespace FolderSeal
         {
             sha256Hex = null;
             if (String.IsNullOrWhiteSpace(content) || String.IsNullOrWhiteSpace(fileName)) return false;
+            string matched = null;
             using (StringReader reader = new StringReader(content))
             {
                 string line;
@@ -159,14 +160,18 @@ namespace FolderSeal
                     if (!System.Text.RegularExpressions.Regex.IsMatch(hash, "^[0-9a-fA-F]{64}$")) continue;
                     string target = trimmed.Substring(64).Trim();
                     if (target.StartsWith("*", StringComparison.Ordinal)) target = target.Substring(1);
+                    if (target.IndexOf('/') >= 0 || target.IndexOf('\\') >= 0 || target.Contains("..")) continue;
                     if (String.Equals(target, fileName, StringComparison.OrdinalIgnoreCase))
                     {
-                        sha256Hex = hash.ToUpperInvariant();
-                        return true;
+                        string normalized = hash.ToUpperInvariant();
+                        if (matched != null && !String.Equals(matched, normalized, StringComparison.Ordinal)) return false;
+                        matched = normalized;
                     }
                 }
             }
-            return false;
+            if (matched == null) return false;
+            sha256Hex = matched;
+            return true;
         }
 
         internal static bool TryGetInstalledDirectory(string baseDirectory, out string installDir)
@@ -188,7 +193,22 @@ namespace FolderSeal
 
         internal static string DefaultUpdateDirectory()
         {
-            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "EurekaGao", "FolderSeal", "Updates");
+            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "EurekaGao", "FolderSeal", "Updates");
+        }
+
+        private static bool ShouldRestrictUpdatePath(string path)
+        {
+            if (!Native.IsAdmin() || String.IsNullOrWhiteSpace(path)) return false;
+            string defaultDir = Paths.Full(DefaultUpdateDirectory());
+            string full = Paths.Full(path);
+            return String.Equals(full, defaultDir, StringComparison.OrdinalIgnoreCase) || Paths.Inside(full, defaultDir);
+        }
+
+        private static void EnsureSecureUpdateDirectory(string directory)
+        {
+            Directory.CreateDirectory(directory);
+            Paths.NoLinks(directory);
+            if (ShouldRestrictUpdatePath(directory)) Permissions.Restrict(directory);
         }
 
         internal static string FormatBytes(long bytes)
@@ -285,7 +305,7 @@ namespace FolderSeal
 
             return Task.Run(delegate
             {
-                Directory.CreateDirectory(targetDirectory);
+                EnsureSecureUpdateDirectory(targetDirectory);
                 string finalPath = Path.Combine(targetDirectory, fileName);
                 string partPath = finalPath + ".part";
                 try
@@ -326,34 +346,34 @@ namespace FolderSeal
 
                     if (progress != null) progress.Report(new UpdateDownloadProgress { Stage = "正在校验安装包完整性…", BytesReceived = received, TotalBytes = received, Percent = 100 });
 
-                    if (!String.IsNullOrWhiteSpace(info.ChecksumUrl))
+                    if (String.IsNullOrWhiteSpace(info.ChecksumUrl))
+                        throw new InvalidDataException("发布信息缺少 SHA-256 校验文件，已停止自动更新。请改用浏览器核验后手动下载。");
+
+                    string checksumText;
+                    using (HttpWebResponse checksumResp = OpenResponseFollowingTrustedRedirects(info.ChecksumUrl, validator, token))
+                    using (Stream checksumStream = checksumResp.GetResponseStream())
+                    using (MemoryStream mem = new MemoryStream())
                     {
-                        string checksumText;
-                        using (HttpWebResponse checksumResp = OpenResponseFollowingTrustedRedirects(info.ChecksumUrl, validator, token))
-                        using (Stream checksumStream = checksumResp.GetResponseStream())
-                        using (MemoryStream mem = new MemoryStream())
+                        byte[] block = new byte[4096];
+                        int count;
+                        while ((count = checksumStream.Read(block, 0, block.Length)) > 0)
                         {
-                            byte[] block = new byte[4096];
-                            int count;
-                            while ((count = checksumStream.Read(block, 0, block.Length)) > 0)
-                            {
-                                token.ThrowIfCancellationRequested();
-                                if (mem.Length + count > MaximumChecksumBytes) throw new InvalidDataException("校验文件过大。");
-                                mem.Write(block, 0, count);
-                            }
-                            checksumText = Encoding.UTF8.GetString(mem.ToArray());
+                            token.ThrowIfCancellationRequested();
+                            if (mem.Length + count > MaximumChecksumBytes) throw new InvalidDataException("校验文件过大。");
+                            mem.Write(block, 0, count);
                         }
-                        string expectedHash;
-                        if (TryParseSha256(checksumText, fileName, out expectedHash))
-                        {
-                            string actualHash = ComputeSha256Hex(partPath);
-                            if (!String.Equals(actualHash, expectedHash, StringComparison.OrdinalIgnoreCase))
-                                throw new InvalidDataException("安装包 SHA-256 校验未通过，文件可能已损坏。");
-                        }
+                        checksumText = Encoding.UTF8.GetString(mem.ToArray());
                     }
+                    string expectedHash;
+                    if (!TryParseSha256(checksumText, fileName, out expectedHash))
+                        throw new InvalidDataException("校验文件中未找到对应安装包的 SHA-256 记录，已停止自动更新。");
+                    string actualHash = ComputeSha256Hex(partPath);
+                    if (!String.Equals(actualHash, expectedHash, StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidDataException("安装包 SHA-256 校验未通过，文件可能已损坏。");
 
                     if (File.Exists(finalPath)) File.Delete(finalPath);
                     File.Move(partPath, finalPath);
+                    if (ShouldRestrictUpdatePath(finalPath)) Permissions.Restrict(finalPath);
                     if (progress != null) progress.Report(new UpdateDownloadProgress { Stage = "下载完成，正在启动覆盖安装…", BytesReceived = received, TotalBytes = received, Percent = 100 });
                     return finalPath;
                 }
@@ -367,46 +387,72 @@ namespace FolderSeal
 
         internal static string BuildApplyScript(string installerPath, string installDir, int waitPid, string scriptPath)
         {
+            return BuildApplyScript(installerPath, installDir, waitPid, scriptPath, null);
+        }
+
+        internal static string BuildApplyScript(string installerPath, string installDir, int waitPid, string scriptPath, string expectedSha256)
+        {
             Func<string, string> psQuote = delegate(string value) { return "'" + (value ?? "").Replace("'", "''") + "'"; };
+            string logPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "EurekaGao", "FolderSeal", "apply-update.log");
             StringBuilder sb = new StringBuilder();
-            sb.AppendLine("$ErrorActionPreference = 'SilentlyContinue'");
+            sb.AppendLine("$ErrorActionPreference = 'Stop'");
             sb.AppendLine("$waitPid = " + waitPid);
             sb.AppendLine("$installer = " + psQuote(installerPath));
             sb.AppendLine("$scriptFile = " + psQuote(scriptPath));
-            sb.AppendLine("$deadline = [DateTime]::UtcNow.AddSeconds(20)");
-            sb.AppendLine("while ([DateTime]::UtcNow -lt $deadline) {");
-            sb.AppendLine("  if (-not (Get-Process -Id $waitPid -ErrorAction SilentlyContinue)) { break }");
-            sb.AppendLine("  Start-Sleep -Milliseconds 200");
-            sb.AppendLine("}");
-            sb.AppendLine("Start-Sleep -Milliseconds 300");
+            sb.AppendLine("$expectedHash = " + psQuote(expectedSha256 ?? ""));
+            sb.AppendLine("$logFile = " + psQuote(logPath));
+            sb.AppendLine("function Write-Log([string]$msg) { try { $dir = Split-Path -Parent $logFile; if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }; Add-Content -LiteralPath $logFile -Value ('[' + [DateTime]::Now.ToString('s') + '] ' + $msg) -Encoding UTF8 } catch { } }");
+            sb.AppendLine("try {");
+            sb.AppendLine("  $exited = $false");
+            sb.AppendLine("  $deadline = [DateTime]::UtcNow.AddSeconds(60)");
+            sb.AppendLine("  while ([DateTime]::UtcNow -lt $deadline) {");
+            sb.AppendLine("    if (-not (Get-Process -Id $waitPid -ErrorAction SilentlyContinue)) { $exited = $true; break }");
+            sb.AppendLine("    Start-Sleep -Milliseconds 200");
+            sb.AppendLine("  }");
+            sb.AppendLine("  if (-not $exited) { Write-Log 'Main process did not exit within 60s; aborting update.'; exit 2 }");
+            sb.AppendLine("  Start-Sleep -Milliseconds 300");
+            sb.AppendLine("  if (-not (Test-Path -LiteralPath $installer)) { Write-Log 'Installer missing before launch.'; exit 3 }");
+            sb.AppendLine("  if (-not [string]::IsNullOrWhiteSpace($expectedHash)) {");
+            sb.AppendLine("    $actualHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash");
+            sb.AppendLine("    if (-not $actualHash.Equals($expectedHash, [StringComparison]::OrdinalIgnoreCase)) { Write-Log ('Installer SHA-256 mismatch before launch: ' + $actualHash); Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue; exit 4 }");
+            sb.AppendLine("  }");
             if (!String.IsNullOrWhiteSpace(installDir))
             {
                 string exePath = Path.Combine(installDir, "FolderSeal.exe");
-                sb.AppendLine("$installDir = " + psQuote(installDir));
-                sb.AppendLine("$exePath = " + psQuote(exePath));
-                sb.AppendLine("$proc = Start-Process -FilePath $installer -ArgumentList (\"/S /D=\" + $installDir) -Wait -PassThru");
-                sb.AppendLine("if ($proc -and $proc.ExitCode -eq 0) {");
-                sb.AppendLine("  if (Test-Path -LiteralPath $exePath) { Start-Process -FilePath $exePath }");
-                sb.AppendLine("  Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue");
-                sb.AppendLine("} else {");
-                sb.AppendLine("  Start-Process -FilePath $installer");
-                sb.AppendLine("}");
+                sb.AppendLine("  $installDir = " + psQuote(installDir));
+                sb.AppendLine("  $exePath = " + psQuote(exePath));
+                sb.AppendLine("  $proc = Start-Process -FilePath $installer -ArgumentList (\"/S /D=\" + $installDir) -PassThru");
+                sb.AppendLine("  if (-not $proc.WaitForExit(180000)) { try { $proc.Kill() } catch { }; Write-Log 'Silent installer timed out after 180s.'; exit 5 }");
+                sb.AppendLine("  if ($proc.ExitCode -eq 0) {");
+                sb.AppendLine("    Write-Log 'Silent update succeeded.'");
+                sb.AppendLine("    if (Test-Path -LiteralPath $exePath) { Start-Process -FilePath $exePath }");
+                sb.AppendLine("    Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue");
+                sb.AppendLine("  } else {");
+                sb.AppendLine("    Write-Log ('Silent installer failed with exit code ' + $proc.ExitCode)");
+                sb.AppendLine("  }");
             }
             else
             {
-                sb.AppendLine("Start-Process -FilePath $installer");
+                sb.AppendLine("  Write-Log 'Launching interactive installer for portable edition.'");
+                sb.AppendLine("  Start-Process -FilePath $installer");
             }
-            sb.AppendLine("Remove-Item -LiteralPath $scriptFile -Force -ErrorAction SilentlyContinue");
+            sb.AppendLine("} catch {");
+            sb.AppendLine("  Write-Log ('Update script error: ' + $_.Exception.Message)");
+            sb.AppendLine("} finally {");
+            sb.AppendLine("  Remove-Item -LiteralPath $scriptFile -Force -ErrorAction SilentlyContinue");
+            sb.AppendLine("}");
             return sb.ToString();
         }
 
         internal static void LaunchInstallerAfterExit(string installerPath, string installDir, int currentPid)
         {
             string updateDir = Path.GetDirectoryName(installerPath) ?? DefaultUpdateDirectory();
-            Directory.CreateDirectory(updateDir);
+            EnsureSecureUpdateDirectory(updateDir);
+            string expectedSha256 = ComputeSha256Hex(installerPath);
             string scriptPath = Path.Combine(updateDir, "apply-update-" + Guid.NewGuid().ToString("N") + ".ps1");
-            string script = BuildApplyScript(installerPath, installDir, currentPid, scriptPath);
+            string script = BuildApplyScript(installerPath, installDir, currentPid, scriptPath, expectedSha256);
             File.WriteAllText(scriptPath, script, new UTF8Encoding(true));
+            if (ShouldRestrictUpdatePath(scriptPath)) Permissions.Restrict(scriptPath);
 
             string psExe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), @"WindowsPowerShell\v1.0\powershell.exe");
             if (!File.Exists(psExe)) psExe = "powershell.exe";
@@ -930,18 +976,35 @@ namespace FolderSeal
 
     internal static class ArchiveCrypto
     {
+        private static void ReadExactly(Stream stream, byte[] buffer, int offset, int count)
+        {
+            int total = 0;
+            while (total < count)
+            {
+                int read = stream.Read(buffer, offset + total, count - total);
+                if (read <= 0) throw new EndOfStreamException("加密文件已截断。");
+                total += read;
+            }
+        }
+        internal static void AuthenticateStream(Stream stream, KeySet keys)
+        {
+            long length = stream.Length - 32;
+            if (length <= Header.Size) throw new IOException("加密文件已截断。");
+            stream.Position = 0;
+            using (HMACSHA256 hmac = new HMACSHA256(keys.Authentication))
+            {
+                byte[] actual = hmac.ComputeHash(new LimitedStream(stream, length));
+                byte[] expected = new byte[32];
+                try { ReadExactly(stream, expected, 0, expected.Length); }
+                catch (EndOfStreamException) { throw new CryptographicException("密码不正确，或加密文件已被修改/损坏。未解密任何文件。"); }
+                if (!Paths.Equal(actual, expected))
+                    throw new CryptographicException("密码不正确，或加密文件已被修改/损坏。未解密任何文件。");
+            }
+        }
         public static void Authenticate(string path, KeySet keys)
         {
             using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
-            using (HMACSHA256 hmac = new HMACSHA256(keys.Authentication))
-            {
-                long length = stream.Length - 32;
-                if (length <= Header.Size) throw new IOException("加密文件已截断。");
-                byte[] actual = hmac.ComputeHash(new LimitedStream(stream, length));
-                byte[] expected = new byte[32];
-                if (stream.Read(expected, 0, expected.Length) != expected.Length || !Paths.Equal(actual, expected))
-                    throw new CryptographicException("密码不正确，或加密文件已被修改/损坏。未解密任何文件。");
-            }
+                AuthenticateStream(stream, keys);
         }
         public static List<EntryStamp> Encrypt(string work, string output, Header header, KeySet keys)
         {
@@ -993,15 +1056,22 @@ namespace FolderSeal
         }
         public static void DecryptZip(string path, string output, Header header, KeySet keys)
         {
-            Authenticate(path, keys);
             using (FileStream source = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
-            using (Aes aes = Aes.Create())
             {
-                aes.Key = keys.Encryption; aes.IV = header.IV; aes.Mode = CipherMode.CBC; aes.Padding = PaddingMode.PKCS7;
-                source.Position = Header.Size;
-                using (CryptoStream decrypted = new CryptoStream(new LimitedStream(source, source.Length - Header.Size - 32), aes.CreateDecryptor(), CryptoStreamMode.Read))
-                using (FileStream destination = new FileStream(output, FileMode.CreateNew, FileAccess.Write, FileShare.None))
-                { decrypted.CopyTo(destination); destination.Flush(true); }
+                AuthenticateStream(source, keys);
+                byte[] streamIv = new byte[16];
+                source.Position = 44;
+                ReadExactly(source, streamIv, 0, streamIv.Length);
+                if (!Paths.Equal(streamIv, header.IV))
+                    throw new CryptographicException("加密文件头部在认证后被更改。");
+                using (Aes aes = Aes.Create())
+                {
+                    aes.Key = keys.Encryption; aes.IV = header.IV; aes.Mode = CipherMode.CBC; aes.Padding = PaddingMode.PKCS7;
+                    source.Position = Header.Size;
+                    using (CryptoStream decrypted = new CryptoStream(new LimitedStream(source, source.Length - Header.Size - 32), aes.CreateDecryptor(), CryptoStreamMode.Read))
+                    using (FileStream destination = new FileStream(output, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                    { decrypted.CopyTo(destination); destination.Flush(true); }
+                }
             }
         }
         private static List<ZipArchiveEntry> Entries(ZipArchive zip)
@@ -1093,17 +1163,23 @@ namespace FolderSeal
         }
         public static byte[] Decode(string path, string password)
         {
-            Header h = Header.Read(path);
-            using (KeySet k = new KeySet(password, h.Salt, h.Iterations))
+            using (FileStream f = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
             {
-                ArchiveCrypto.Authenticate(path, k);
-                using (FileStream f = File.OpenRead(path))
-                using (Aes aes = Aes.Create())
-                using (MemoryStream result = new MemoryStream())
+                Header h = Header.Read(path);
+                using (KeySet k = new KeySet(password, h.Salt, h.Iterations))
                 {
-                    aes.Key = k.Encryption; aes.IV = h.IV; f.Position = Header.Size;
-                    using (CryptoStream c = new CryptoStream(new LimitedStream(f, f.Length - Header.Size - 32), aes.CreateDecryptor(), CryptoStreamMode.Read)) c.CopyTo(result);
-                    return result.ToArray();
+                    ArchiveCrypto.AuthenticateStream(f, k);
+                    byte[] streamIv = new byte[16];
+                    f.Position = 44;
+                    if (f.Read(streamIv, 0, streamIv.Length) != streamIv.Length || !Paths.Equal(streamIv, h.IV))
+                        throw new CryptographicException("加密记录头部在认证后被更改。");
+                    using (Aes aes = Aes.Create())
+                    using (MemoryStream result = new MemoryStream())
+                    {
+                        aes.Key = k.Encryption; aes.IV = h.IV; f.Position = Header.Size;
+                        using (CryptoStream c = new CryptoStream(new LimitedStream(f, f.Length - Header.Size - 32), aes.CreateDecryptor(), CryptoStreamMode.Read)) c.CopyTo(result);
+                        return result.ToArray();
+                    }
                 }
             }
         }
@@ -1305,11 +1381,28 @@ namespace FolderSeal
                 }
                 catch (Exception error)
                 {
-                    result.Failed.Add(target.Path + "（" + error.Message + "）");
-                    if (result.CatalogUpdated)
+                    bool enteredMigration = false;
+                    try
                     {
-                        target.Managed = false;
-                        try { catalog.Save(newPassword); } catch (Exception) { }
+                        using (VaultSession probe = new VaultSession(target.Path, sessionsBase, protect))
+                            enteredMigration = probe.HasPendingMigration;
+                    }
+                    catch (Exception) { }
+                    if (enteredMigration && !result.CatalogUpdated)
+                    {
+                        // Avoid locking the user out when the first vault already entered migration/rekey state.
+                        foreach (VaultLocation item in catalog.Locations) item.Managed = false;
+                        try { catalog.Save(newPassword); result.CatalogUpdated = true; } catch (Exception) { }
+                        result.Failed.Add(target.Path + "（已进入改密事务但未完成，请使用新密码打开该目录完成恢复：" + error.Message + "）");
+                    }
+                    else
+                    {
+                        result.Failed.Add(target.Path + "（" + error.Message + "）");
+                        if (result.CatalogUpdated)
+                        {
+                            target.Managed = false;
+                            try { catalog.Save(newPassword); } catch (Exception) { }
+                        }
                     }
                 }
             }
@@ -1328,7 +1421,7 @@ namespace FolderSeal
     {
         // Match complete generated-fixture directory names, never ordinary names such as "original".
         private static readonly System.Text.RegularExpressions.Regex FixtureDirectory = new System.Text.RegularExpressions.Regex(
-            @"^(?:generated-(?:library|test|ui)|entry-test|\.?setup-test)-[a-f0-9]{32}$",
+            @"^(?:generated-(?:library|test|ui|instance)|shell-test|entry-test|\.?setup-test)-[a-f0-9]{32}$",
             System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
         public static bool IsExcluded(string path, bool includeTestFixtures = false)
         {
@@ -1379,12 +1472,64 @@ namespace FolderSeal
         }
     }
 
+    internal sealed class WorkspaceSnapshot
+    {
+        public struct FileStamp
+        {
+            public long Size;
+            public long LastWriteUtcTicks;
+        }
+        public readonly HashSet<string> Directories;
+        public readonly Dictionary<string, FileStamp> Files;
+        private WorkspaceSnapshot(HashSet<string> directories, Dictionary<string, FileStamp> files)
+        {
+            Directories = directories;
+            Files = files;
+        }
+        public static WorkspaceSnapshot Capture(string work)
+        {
+            HashSet<string> dirs = new HashSet<string>(StringComparer.Ordinal);
+            foreach (string dir in Paths.Directories(work))
+                dirs.Add(Paths.NameUnder(work, dir));
+            Dictionary<string, FileStamp> files = new Dictionary<string, FileStamp>(StringComparer.Ordinal);
+            foreach (string file in Paths.Files(work))
+            {
+                FileInfo info = new FileInfo(file);
+                files[Paths.NameUnder(work, file)] = new FileStamp { Size = info.Length, LastWriteUtcTicks = info.LastWriteTimeUtc.Ticks };
+            }
+            return new WorkspaceSnapshot(dirs, files);
+        }
+        public bool Matches(string work, bool verifyReadableWithoutWriters)
+        {
+            List<string> currentDirs = Paths.Directories(work);
+            if (currentDirs.Count != Directories.Count) return false;
+            foreach (string dir in currentDirs)
+                if (!Directories.Contains(Paths.NameUnder(work, dir))) return false;
+            List<string> currentFiles = Paths.Files(work);
+            if (currentFiles.Count != Files.Count) return false;
+            foreach (string file in currentFiles)
+            {
+                FileStamp expected;
+                if (!Files.TryGetValue(Paths.NameUnder(work, file), out expected)) return false;
+                FileInfo info = new FileInfo(file);
+                if (info.Length != expected.Size || info.LastWriteTimeUtc.Ticks != expected.LastWriteUtcTicks) return false;
+                if (verifyReadableWithoutWriters)
+                {
+                    using (new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read)) { }
+                }
+            }
+            return true;
+        }
+    }
+
     internal sealed class VaultSession : IDisposable
     {
         public const string DataName = "内容.egvault", BackupName = "上一版本.egvault", GateName = ".access.lock";
         public string Root, SessionRoot, Work;
         public bool Open { get { return keys != null || (gate != null && CleanupPending); } }
         public bool CleanupPending { get; private set; }
+        public bool LastLockSkippedSnapshot { get; private set; }
+        public string LastSealWarning { get; private set; }
         public int PendingSourceDeleteCount { get { return pendingImportSources.Count; } }
         public IReadOnlyList<string> LastSourceCleanupWarnings { get; private set; }
         public int LastSourceDeletedCount { get; private set; }
@@ -1401,6 +1546,7 @@ namespace FolderSeal
         private Header header;
         private FileStream gate;
         private byte[] baseline;
+        private WorkspaceSnapshot workspaceBaseline;
         private readonly string sessionsBase;
         private readonly bool protect;
         public VaultSession(string root, string sessionsBase, bool protect)
@@ -1482,15 +1628,22 @@ namespace FolderSeal
             Paths.NoLinks(sessionsBase);
             Directory.CreateDirectory(sessionsBase);
             SessionRoot = Path.Combine(sessionsBase, Guid.NewGuid().ToString("N"));
+            if (Directory.Exists(SessionRoot) || File.Exists(SessionRoot))
+                throw new IOException("工作区目录意外已存在，已停止创建。");
             if (protect) Permissions.CreateWorkspaceContainer(SessionRoot);
             else Directory.CreateDirectory(SessionRoot);
+            Paths.NoLinks(SessionRoot);
             Work = Path.Combine(SessionRoot, "编辑区");
+            if (Directory.Exists(Work) || File.Exists(Work))
+                throw new IOException("编辑区目录意外已存在，已停止创建。");
             Directory.CreateDirectory(Work);
+            Paths.NoLinks(Work);
             WriteWorkspaceNote();
         }
         public void Create(string password)
         {
-            if (password.Length < 6) throw new ArgumentException("密码至少需要 6 个字符。");
+            if (String.IsNullOrEmpty(password) || !PasswordDialog.HasMinimumLength(password))
+                throw new ArgumentException("密码至少需要 " + PasswordDialog.NewPasswordMinimum + " 个有效字符。");
             if (Directory.Exists(Root) || File.Exists(Root)) throw new IOException("请使用尚不存在的新文件夹名称。");
             Paths.NoLinks(Path.GetDirectoryName(Root));
             if (protect) Native.LocalNtfs(Path.GetDirectoryName(Root));
@@ -1505,6 +1658,7 @@ namespace FolderSeal
                 SaveSnapshot();
                 WriteWorkspaceNote();
                 if (protect) Permissions.Workspace(Work, true);
+                workspaceBaseline = WorkspaceSnapshot.Capture(Work);
             }
             catch { Dispose(); throw; }
         }
@@ -1524,6 +1678,7 @@ namespace FolderSeal
                 try { ArchiveCrypto.DecryptZip(Data, zip, header, keys); ArchiveCrypto.Extract(zip, Work); }
                 finally { if (File.Exists(zip)) File.Delete(zip); }
                 if (protect) Permissions.Workspace(Work, true);
+                workspaceBaseline = WorkspaceSnapshot.Capture(Work);
                 if (!Paths.Equal(Paths.Hash(Data), baseline))
                     throw new IOException("打开期间加密版本已改变，请重试。");
                 if (protect)
@@ -1563,6 +1718,8 @@ namespace FolderSeal
                     if (cleanup.Length != 2 || !String.Equals(cleanup[0], Root, StringComparison.OrdinalIgnoreCase) || cleanup[1] != version)
                         throw new IOException("待清理工作区与当前密文版本不一致，已停止恢复。请保留工作区和加密目录。");
                     if (protect && Directory.Exists(work)) Permissions.Workspace(work, false);
+                    pendingImportSources.Clear();
+                    pendingImportSources.AddRange(LoadPendingImportSources(Path.Combine(existingSession, PendingSourcesFile)));
                 }
                 else
                 {
@@ -1575,6 +1732,7 @@ namespace FolderSeal
                 }
                 if (protect) Permissions.ProtectWorkspaceContainer(existingSession);
                 baseline = current;
+                workspaceBaseline = null;
                 SessionRoot = existingSession; Work = work; CleanupPending = pendingCleanup;
                 if (CleanupPending) ReleaseKeys();
             }
@@ -1603,6 +1761,8 @@ namespace FolderSeal
                 }
                 else File.Move(stage, Data);
                 baseline = Paths.Hash(Data);
+                if (!String.IsNullOrEmpty(SessionRoot) && Directory.Exists(SessionRoot))
+                    WriteWorkspaceNote();
             }
             finally
             {
@@ -1610,28 +1770,141 @@ namespace FolderSeal
                 if (File.Exists(stage)) File.Delete(stage);
                 if (protect && Directory.Exists(Root))
                 {
-                    try { Permissions.Seal(Root); FolderEntry.ProtectIfPresent(Root); } catch (Exception) { }
+                    try { Permissions.Seal(Root); FolderEntry.ProtectIfPresent(Root); LastSealWarning = null; }
+                    catch (Exception sealErr) { LastSealWarning = "防删除权限未能完整恢复，请稍后在“更多 → 创建或修复密封夹入口”中重试：" + sealErr.Message; }
                 }
             }
+        }
+        private const string PendingSourcesFile = "待删来源.bin";
+        public void CancelPendingImport(string relative)
+        {
+            if (String.IsNullOrWhiteSpace(relative)) return;
+            string norm = relative.Replace('/', '\\').Trim('\\');
+            pendingImportSources.RemoveAll(item =>
+                String.Equals(item.WorkRelative, norm, StringComparison.OrdinalIgnoreCase) ||
+                (item.IsDirectory && norm.StartsWith(item.WorkRelative + "\\", StringComparison.OrdinalIgnoreCase)));
+        }
+        private bool IsPendingImportEligibleInWork(PendingImportSource item)
+        {
+            if (item == null || String.IsNullOrEmpty(Work)) return false;
+            string workTarget = Path.Combine(Work, item.WorkRelative);
+            try
+            {
+                if (item.IsDirectory)
+                {
+                    if (!Directory.Exists(workTarget)) return false;
+                    return MatchesFolderSnapshot(workTarget, item.FolderDirectories, item.FolderFileHashes);
+                }
+                if (!File.Exists(workTarget)) return false;
+                return Paths.Equal(item.FileHash, Paths.Hash(workTarget));
+            }
+            catch (Exception) { return false; }
+        }
+        private void SavePendingImportSources(string path, List<PendingImportSource> items)
+        {
+            if (items == null || items.Count == 0) { if (File.Exists(path)) File.Delete(path); return; }
+            using (MemoryStream m = new MemoryStream())
+            {
+                using (BinaryWriter w = new BinaryWriter(m, Encoding.UTF8, true))
+                {
+                    w.Write(1);
+                    w.Write(items.Count);
+                    foreach (PendingImportSource item in items)
+                    {
+                        w.Write(item.SourcePath ?? "");
+                        w.Write(item.WorkRelative ?? "");
+                        w.Write(item.IsDirectory);
+                        if (item.IsDirectory)
+                        {
+                            w.Write(item.FolderDirectories != null ? item.FolderDirectories.Count : 0);
+                            if (item.FolderDirectories != null) foreach (string d in item.FolderDirectories) w.Write(d);
+                            w.Write(item.FolderFileHashes != null ? item.FolderFileHashes.Count : 0);
+                            if (item.FolderFileHashes != null) foreach (var kv in item.FolderFileHashes) { w.Write(kv.Key); w.Write(kv.Value.Length); w.Write(kv.Value); }
+                        }
+                        else
+                        {
+                            byte[] hash = item.FileHash ?? new byte[0];
+                            w.Write(hash.Length); w.Write(hash);
+                        }
+                    }
+                }
+                byte[] data = m.ToArray();
+                using (FileStream output = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None))
+                { output.Write(data, 0, data.Length); output.Flush(true); }
+                if (protect) Permissions.Restrict(path);
+            }
+        }
+        private static List<PendingImportSource> LoadPendingImportSources(string path)
+        {
+            List<PendingImportSource> list = new List<PendingImportSource>();
+            if (!File.Exists(path)) return list;
+            Paths.NoLinks(path); Native.RejectHardLink(path);
+            byte[] data = File.ReadAllBytes(path);
+            using (MemoryStream m = new MemoryStream(data))
+            using (BinaryReader r = new BinaryReader(m, Encoding.UTF8))
+            {
+                if (r.ReadInt32() != 1) throw new IOException("待删来源记录版本无效。");
+                int count = r.ReadInt32();
+                if (count < 0 || count > 100000) throw new IOException("待删来源记录条目数无效。");
+                for (int i = 0; i < count; i++)
+                {
+                    PendingImportSource item = new PendingImportSource
+                    {
+                        SourcePath = r.ReadString(),
+                        WorkRelative = r.ReadString(),
+                        IsDirectory = r.ReadBoolean()
+                    };
+                    if (item.IsDirectory)
+                    {
+                        int dc = r.ReadInt32();
+                        item.FolderDirectories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        for (int j = 0; j < dc; j++) item.FolderDirectories.Add(r.ReadString());
+                        int fc = r.ReadInt32();
+                        item.FolderFileHashes = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
+                        for (int j = 0; j < fc; j++) { string k = r.ReadString(); int hl = r.ReadInt32(); item.FolderFileHashes[k] = r.ReadBytes(hl); }
+                    }
+                    else
+                    {
+                        int hl = r.ReadInt32();
+                        item.FileHash = r.ReadBytes(hl);
+                    }
+                    list.Add(item);
+                }
+            }
+            return list;
+        }
+        public bool HasWorkspaceChanges()
+        {
+            if (!Open || CleanupPending || workspaceBaseline == null || String.IsNullOrEmpty(Work) || !Directory.Exists(Work))
+                return true;
+            if (pendingImportSources.Any(IsPendingImportEligibleInWork))
+                return true;
+            try { return !workspaceBaseline.Matches(Work, false); }
+            catch (Exception) { return true; }
         }
         public void Lock()
         {
             if (!Open) throw new InvalidOperationException("当前文件夹未解锁。");
             LastSourceCleanupWarnings = new string[0];
             LastSourceDeletedCount = 0;
+            LastLockSkippedSnapshot = false;
             if (!CleanupPending)
             {
                 try
                 {
                     if (protect) Permissions.Workspace(Work, false);
-                    List<PendingImportSource> eligible = pendingImportSources.Where(item =>
+                    List<PendingImportSource> eligible = pendingImportSources.Where(IsPendingImportEligibleInWork).ToList();
+                    if (eligible.Count == 0 && workspaceBaseline != null && workspaceBaseline.Matches(Work, true))
                     {
-                        string workTarget = Path.Combine(Work, item.WorkRelative);
-                        return item.IsDirectory ? Directory.Exists(workTarget) : File.Exists(workTarget);
-                    }).ToList();
-                    SaveSnapshot();
+                        CheckRoot();
+                        if (baseline == null || !File.Exists(Data) || !Paths.Equal(Paths.Hash(Data), baseline))
+                            throw new IOException("磁盘上的加密版本已改变，为避免覆盖，已停止保存。明文工作区保留。");
+                        LastLockSkippedSnapshot = true;
+                    }
+                    else SaveSnapshot();
                     pendingImportSources.Clear();
                     pendingImportSources.AddRange(eligible);
+                    SavePendingImportSources(Path.Combine(SessionRoot, PendingSourcesFile), eligible);
                     string marker = Path.Combine(SessionRoot, "清理状态.txt");
                     byte[] content = Encoding.UTF8.GetBytes(Root + "\r\n" + Convert.ToBase64String(baseline));
                     using (FileStream output = new FileStream(marker, FileMode.Create, FileAccess.Write, FileShare.None))
@@ -1651,11 +1924,11 @@ namespace FolderSeal
             foreach (string child in Directory.GetFileSystemEntries(SessionRoot))
             {
                 string name = Path.GetFileName(child);
-                if (name != "清理状态.txt" && name != "工作区说明.txt" && name != "验证临时.zip" && name != "解密临时.zip")
+                if (name != "清理状态.txt" && name != "工作区说明.txt" && name != "验证临时.zip" && name != "解密临时.zip" && name != PendingSourcesFile)
                     throw new IOException("工作区有未知项目，明文清理尚未完成：" + name);
                 Paths.NoLinks(child); Native.RejectHardLink(child);
             }
-            foreach (string name in new[] { "工作区说明.txt", "验证临时.zip", "解密临时.zip" })
+            foreach (string name in new[] { "工作区说明.txt", "验证临时.zip", "解密临时.zip", PendingSourcesFile })
             { string path = Path.Combine(SessionRoot, name); if (File.Exists(path)) File.Delete(path); }
             File.Delete(Path.Combine(SessionRoot, "清理状态.txt"));
             Directory.Delete(SessionRoot, false);
@@ -1674,6 +1947,7 @@ namespace FolderSeal
             foreach (PendingImportSource item in toDelete.Where(x => x.IsDirectory))
             {
                 if (!Directory.Exists(item.SourcePath)) continue;
+                string parked = null;
                 try
                 {
                     Paths.NoLinks(item.SourcePath);
@@ -1682,17 +1956,33 @@ namespace FolderSeal
                         warnings.Add("源文件夹在导入后发生变化，原文件夹已保留：" + item.SourcePath);
                         continue;
                     }
-                    Paths.DeleteTree(item.SourcePath);
+                    string parent = Path.GetDirectoryName(item.SourcePath);
+                    parked = Path.Combine(parent, ".fs-del-" + Guid.NewGuid().ToString("N"));
+                    Directory.Move(item.SourcePath, parked);
+                    if (!MatchesFolderSnapshot(parked, item.FolderDirectories, item.FolderFileHashes))
+                    {
+                        Directory.Move(parked, item.SourcePath);
+                        parked = null;
+                        warnings.Add("源文件夹在删除校验期间发生变化，原文件夹已保留：" + item.SourcePath);
+                        continue;
+                    }
+                    Paths.DeleteTree(parked);
+                    parked = null;
                     deleted++;
                 }
                 catch (Exception error)
                 {
+                    if (parked != null && Directory.Exists(parked) && !Directory.Exists(item.SourcePath))
+                    {
+                        try { Directory.Move(parked, item.SourcePath); } catch (Exception) { }
+                    }
                     warnings.Add("源文件夹无法删除，请手动删除：" + item.SourcePath + "（" + error.Message + "）");
                 }
             }
             foreach (PendingImportSource item in toDelete.Where(x => !x.IsDirectory))
             {
                 if (!File.Exists(item.SourcePath)) continue;
+                string parked = null;
                 try
                 {
                     Paths.NoLinks(item.SourcePath);
@@ -1702,12 +1992,29 @@ namespace FolderSeal
                         warnings.Add("源文件在导入后发生变化，原文件已保留：" + item.SourcePath);
                         continue;
                     }
-                    File.SetAttributes(item.SourcePath, File.GetAttributes(item.SourcePath) & ~FileAttributes.ReadOnly);
-                    File.Delete(item.SourcePath);
+                    string parent = Path.GetDirectoryName(item.SourcePath);
+                    parked = Path.Combine(parent, ".fs-del-" + Guid.NewGuid().ToString("N"));
+                    File.Move(item.SourcePath, parked);
+                    Paths.NoLinks(parked);
+                    Native.RejectHardLink(parked);
+                    if (!Paths.Equal(item.FileHash, Paths.Hash(parked)))
+                    {
+                        File.Move(parked, item.SourcePath);
+                        parked = null;
+                        warnings.Add("源文件在删除校验期间发生变化，原文件已保留：" + item.SourcePath);
+                        continue;
+                    }
+                    File.SetAttributes(parked, File.GetAttributes(parked) & ~FileAttributes.ReadOnly);
+                    File.Delete(parked);
+                    parked = null;
                     deleted++;
                 }
                 catch (Exception error)
                 {
+                    if (parked != null && File.Exists(parked) && !File.Exists(item.SourcePath))
+                    {
+                        try { File.Move(parked, item.SourcePath); } catch (Exception) { }
+                    }
                     warnings.Add("原文件无法删除，请手动删除：" + item.SourcePath + "（" + error.Message + "）");
                 }
             }
@@ -1836,7 +2143,8 @@ namespace FolderSeal
         public void ChangePassword(string oldPassword, string newPassword, Action<string> checkpoint = null)
         {
             if (Open) throw new InvalidOperationException("请先保存并锁定。");
-            if (newPassword == null || newPassword.Length < 6) throw new ArgumentException("密码至少需要 6 个字符。");
+            if (String.IsNullOrEmpty(newPassword) || !PasswordDialog.HasMinimumLength(newPassword))
+                throw new ArgumentException("密码至少需要 " + PasswordDialog.NewPasswordMinimum + " 个有效字符。");
             if (!HasPendingMigration && HasUnfinishedWorkspace) throw new IOException("此目录还有未恢复的工作区，请先恢复、保存并锁定，再改密。");
             if (protect) Native.LocalNtfs(Path.GetDirectoryName(Root));
             Acquire(true);
@@ -1946,8 +2254,11 @@ namespace FolderSeal
                 throw new IOException("导入时源文件发生变化。原文件保留，请重试。");
             }
             if (protect) Permissions.Set(target, true);
-            if (deleteSourceOnLock && !pendingImportSources.Any(x => !x.IsDirectory && String.Equals(x.SourcePath, fullSource, StringComparison.OrdinalIgnoreCase)))
+            if (deleteSourceOnLock)
+            {
+                pendingImportSources.RemoveAll(x => String.Equals(x.WorkRelative, fileName, StringComparison.OrdinalIgnoreCase) || (!x.IsDirectory && String.Equals(x.SourcePath, fullSource, StringComparison.OrdinalIgnoreCase)));
                 pendingImportSources.Add(new PendingImportSource { SourcePath = fullSource, WorkRelative = fileName, IsDirectory = false, FileHash = before });
+            }
         }
         public void ImportFolder(string source, bool deleteSourceOnLock = false)
         {
@@ -1992,8 +2303,11 @@ namespace FolderSeal
                 try { if (Directory.Exists(target)) Paths.DeleteTree(target); } catch (Exception) { }
                 throw;
             }
-            if (deleteSourceOnLock && !pendingImportSources.Any(x => x.IsDirectory && String.Equals(x.SourcePath, fullSource, StringComparison.OrdinalIgnoreCase)))
+            if (deleteSourceOnLock)
+            {
+                pendingImportSources.RemoveAll(x => String.Equals(x.WorkRelative, folderName, StringComparison.OrdinalIgnoreCase) || (x.IsDirectory && String.Equals(x.SourcePath, fullSource, StringComparison.OrdinalIgnoreCase)));
                 pendingImportSources.Add(new PendingImportSource { SourcePath = fullSource, WorkRelative = folderName, IsDirectory = true, FolderDirectories = dirSet, FolderFileHashes = fileHashes });
+            }
         }
         // Imports the direct children of a folder so the vault root mirrors the original folder.
         public void ImportContents(string source)
@@ -2038,6 +2352,7 @@ namespace FolderSeal
         public void Dispose()
         {
             ReleaseKeys();
+            workspaceBaseline = null;
             if (gate != null) { gate.Dispose(); gate = null; }
         }
     }
@@ -2205,6 +2520,11 @@ namespace FolderSeal
             }
             return bitmap;
         }
+        internal static readonly Font ListHeaderFont = new Font(FontFamilyName, 9f, FontStyle.Bold);
+        internal static readonly Font ListNameFont = new Font(FontFamilyName, 9.5f, FontStyle.Bold);
+        internal static readonly Font BtnPrimaryFont = new Font(FontFamilyName, 10f, FontStyle.Bold);
+        internal static readonly Font BtnBoldFont = new Font(FontFamilyName, 9.5f, FontStyle.Bold);
+        internal static readonly Font BtnRegularFont = new Font(FontFamilyName, 9.5f);
     }
 
     internal sealed class ActionButton : Button
@@ -2214,7 +2534,7 @@ namespace FolderSeal
         public ButtonTone Tone
         {
             get { return tone; }
-            set { tone = value; ApplyTone(); Invalidate(); }
+            set { if (tone == value) return; tone = value; ApplyTone(); Invalidate(); }
         }
         public ActionButton()
         {
@@ -2228,27 +2548,27 @@ namespace FolderSeal
             if (tone == ButtonTone.Primary)
             {
                 BackColor = UiTheme.Primary; ForeColor = Color.White; FlatAppearance.BorderColor = UiTheme.Primary;
-                Font = new Font("Microsoft YaHei UI", 10, FontStyle.Bold);
+                Font = UiTheme.BtnPrimaryFont;
             }
             else if (tone == ButtonTone.Tint)
             {
                 BackColor = UiTheme.PrimaryTint; ForeColor = UiTheme.Primary; FlatAppearance.BorderColor = UiTheme.PrimaryBorder;
-                Font = new Font("Microsoft YaHei UI", 9.5f, FontStyle.Bold);
+                Font = UiTheme.BtnBoldFont;
             }
             else if (tone == ButtonTone.Danger)
             {
                 BackColor = Color.White; ForeColor = UiTheme.Red; FlatAppearance.BorderColor = UiTheme.RedBorder;
-                Font = new Font("Microsoft YaHei UI", 9.5f, FontStyle.Bold);
+                Font = UiTheme.BtnBoldFont;
             }
             else if (tone == ButtonTone.Ghost)
             {
                 BackColor = UiTheme.Surface; ForeColor = UiTheme.Muted; FlatAppearance.BorderColor = UiTheme.Surface;
-                Font = new Font("Microsoft YaHei UI", 9.5f);
+                Font = UiTheme.BtnRegularFont;
             }
             else
             {
                 BackColor = Color.White; ForeColor = UiTheme.Ink; FlatAppearance.BorderColor = UiTheme.Line;
-                Font = new Font("Microsoft YaHei UI", 9.5f);
+                Font = UiTheme.BtnRegularFont;
             }
         }
         protected override void OnMouseEnter(EventArgs e) { hovered = true; Invalidate(); base.OnMouseEnter(e); }
@@ -2456,7 +2776,43 @@ namespace FolderSeal
         }
         internal static bool HasMinimumLength(string password)
         {
-            return CharacterCount(password) >= NewPasswordMinimum;
+            if (String.IsNullOrEmpty(password)) return false;
+            int meaningful = 0;
+            for (int i = 0; i < password.Length; i++)
+            {
+                if (Char.IsHighSurrogate(password[i]) && i + 1 < password.Length && Char.IsLowSurrogate(password[i + 1]))
+                {
+                    meaningful++;
+                    i++;
+                    continue;
+                }
+                char c = password[i];
+                if (!Char.IsWhiteSpace(c) && !Char.IsControl(c) && Char.GetUnicodeCategory(c) != System.Globalization.UnicodeCategory.Format)
+                    meaningful++;
+            }
+            return meaningful >= NewPasswordMinimum;
+        }
+        internal static bool HintExposesPassword(string hint, string password)
+        {
+            if (String.IsNullOrWhiteSpace(hint) || String.IsNullOrEmpty(password)) return false;
+            if (hint.IndexOf(password, StringComparison.OrdinalIgnoreCase) >= 0) return true;
+            string hf = FoldForCompare(hint), pf = FoldForCompare(password);
+            if (pf.Length < 3 || hf.Length == 0) return false;
+            if (hf.IndexOf(pf, StringComparison.Ordinal) >= 0) return true;
+            char[] rev = pf.ToCharArray(); Array.Reverse(rev);
+            return hf.IndexOf(new string(rev), StringComparison.Ordinal) >= 0;
+        }
+        private static string FoldForCompare(string value)
+        {
+            string normalized = value.Normalize(NormalizationForm.FormKC);
+            StringBuilder sb = new StringBuilder(normalized.Length);
+            foreach (char c in normalized)
+            {
+                System.Globalization.UnicodeCategory cat = Char.GetUnicodeCategory(c);
+                if (Char.IsWhiteSpace(c) || Char.IsControl(c) || cat == System.Globalization.UnicodeCategory.Format || cat == System.Globalization.UnicodeCategory.NonSpacingMark) continue;
+                sb.Append(Char.ToLowerInvariant(c));
+            }
+            return sb.ToString();
         }
         private readonly TextBox first = new TextBox(), second = new TextBox(), hintBox = new TextBox();
         private readonly Label lengthHint = new Label { AutoSize = true, ForeColor = UiTheme.Muted, Font = new Font("Microsoft YaHei UI", 8.5f) };
@@ -2520,7 +2876,7 @@ namespace FolderSeal
                 hintBox.Margin = new Padding(0, 0, 0, 3);
                 if (!String.IsNullOrEmpty(normalizedHint)) hintBox.Text = normalizedHint;
                 body.Controls.Add(hintBox);
-                body.Controls.Add(new Label { Text = "输入密码时显示，请勿包含密码本身；留空则不设置", AutoSize = true, ForeColor = UiTheme.Muted, Font = new Font("Microsoft YaHei UI", 8.5f), Margin = new Padding(0, 0, 0, 4) });
+                body.Controls.Add(new Label { Text = "提示以明文保存在本机，请勿包含密码本身或敏感片段；留空则不设置", AutoSize = true, ForeColor = UiTheme.Muted, Font = new Font("Microsoft YaHei UI", 8.5f), Margin = new Padding(0, 0, 0, 4) });
             }
             else if (!String.IsNullOrEmpty(normalizedHint))
             {
@@ -2567,13 +2923,13 @@ namespace FolderSeal
             ok.Click += async delegate
             {
                 if (validating) return;
-                if (creating && !HasMinimumLength(first.Text)) { ShowInlineError("新密码至少需要 " + NewPasswordMinimum + " 个字符。建议使用密码管理器生成长密码。"); first.Focus(); return; }
-                if (creating && first.Text != second.Text) { ShowInlineError("两次输入的密码不一致，请核对。"); second.Focus(); second.SelectAll(); return; }
                 if (first.Text.Length == 0) { ShowInlineError("请输入密码。"); first.Focus(); return; }
+                if (creating && !HasMinimumLength(first.Text)) { ShowInlineError("新密码至少需要 " + NewPasswordMinimum + " 个有效字符（不含纯空白）。建议使用密码管理器生成长密码。"); first.Focus(); return; }
+                if (creating && first.Text != second.Text) { ShowInlineError("两次输入的密码不一致，请核对。"); second.Focus(); second.SelectAll(); return; }
                 string candidateHint = creating ? AppSettings.NormalizePasswordHint(hintBox.Text) : null;
-                if (creating && !String.IsNullOrEmpty(candidateHint) && candidateHint.IndexOf(first.Text, StringComparison.OrdinalIgnoreCase) >= 0)
+                if (creating && !String.IsNullOrEmpty(candidateHint) && HintExposesPassword(candidateHint, first.Text))
                 {
-                    ShowInlineError("密码提示不能包含密码本身，请改用只有你能看懂的线索或留空。");
+                    ShowInlineError("密码提示不能包含密码本身（含空格、全角或逆序变体），请改用只有你能看懂的线索或留空。");
                     hintBox.Focus(); hintBox.SelectAll();
                     return;
                 }
@@ -2602,7 +2958,7 @@ namespace FolderSeal
             };
 
             root.Controls.Add(body, 0, 0); root.Controls.Add(footer, 0, 1); Controls.Add(root);
-            AcceptButton = ok; CancelButton = cancel;
+            AcceptButton = danger ? null : ok; CancelButton = cancel;
             Shown += delegate { capsHint.Visible = Control.IsKeyLocked(Keys.CapsLock); UpdateMeter(); first.Focus(); };
         }
         private Control WrapPasswordBox(TextBox box, string toggleName)
@@ -3486,12 +3842,24 @@ namespace FolderSeal
         {
             string dir = Path.GetDirectoryName(FilePath);
             if (!String.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+            Paths.NoLinks(FilePath);
+            if (File.Exists(FilePath)) Native.RejectHardLink(FilePath);
             StringBuilder sb = new StringBuilder();
             sb.Append("hide-entry=").Append(HideFolderEntry ? "1" : "0").Append("\r\n");
             string normalizedHint = NormalizePasswordHint(PasswordHint);
             if (!String.IsNullOrEmpty(normalizedHint))
                 sb.Append("password-hint=").Append(normalizedHint).Append("\r\n");
-            File.WriteAllText(FilePath, sb.ToString(), Encoding.UTF8);
+            byte[] data = Encoding.UTF8.GetBytes(sb.ToString());
+            string temp = Path.Combine(dir, ".pending-settings-" + Guid.NewGuid().ToString("N") + ".tmp");
+            Paths.NoLinks(temp);
+            try
+            {
+                using (FileStream fs = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                { fs.Write(data, 0, data.Length); fs.Flush(true); }
+                if (File.Exists(FilePath)) File.Replace(temp, FilePath, null);
+                else File.Move(temp, FilePath);
+            }
+            finally { if (File.Exists(temp)) try { File.Delete(temp); } catch (Exception) { } }
         }
     }
 
@@ -3694,7 +4062,7 @@ namespace FolderSeal
             {
                 using (SolidBrush bg = new SolidBrush(UiTheme.Surface)) e.Graphics.FillRectangle(bg, e.Bounds);
                 using (Pen line = new Pen(UiTheme.Line)) e.Graphics.DrawLine(line, e.Bounds.Left, e.Bounds.Bottom - 1, e.Bounds.Right, e.Bounds.Bottom - 1);
-                TextRenderer.DrawText(e.Graphics, e.Header.Text, new Font("Microsoft YaHei UI", 9f, FontStyle.Bold), Rectangle.Inflate(e.Bounds, -8, 0), UiTheme.Muted, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+                TextRenderer.DrawText(e.Graphics, e.Header.Text, UiTheme.ListHeaderFont, Rectangle.Inflate(e.Bounds, -8, 0), UiTheme.Muted, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
             };
             list.DrawItem += delegate(object sender, DrawListViewItemEventArgs e) { e.DrawDefault = false; };
             list.DrawSubItem += delegate(object sender, DrawListViewSubItemEventArgs e)
@@ -3710,7 +4078,7 @@ namespace FolderSeal
                     else if (e.SubItem.Text == "位置不可用") fg = UiTheme.Muted2;
                     else fg = UiTheme.Amber;
                 }
-                TextRenderer.DrawText(e.Graphics, e.SubItem.Text, e.ColumnIndex == 0 ? new Font("Microsoft YaHei UI", 9.5f, FontStyle.Bold) : Font, Rectangle.Inflate(e.Bounds, -8, 0), fg, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
+                TextRenderer.DrawText(e.Graphics, e.SubItem.Text, e.ColumnIndex == 0 ? UiTheme.ListNameFont : Font, Rectangle.Inflate(e.Bounds, -8, 0), fg, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
             };
             tableInner.Controls.Add(list);
             tableInner.Controls.Add(scanProgress);
@@ -4120,7 +4488,7 @@ namespace FolderSeal
                 using (SolidBrush bg = new SolidBrush(UiTheme.Surface)) e.Graphics.FillRectangle(bg, e.Bounds);
                 using (Pen border = new Pen(UiTheme.Line)) e.Graphics.DrawLine(border, e.Bounds.Left, e.Bounds.Bottom - 1, e.Bounds.Right, e.Bounds.Bottom - 1);
                 string headerText = e.Header.Text + (e.ColumnIndex == sortColumn ? (sortAscending ? " ▲" : " ▼") : "");
-                TextRenderer.DrawText(e.Graphics, headerText, new Font(Font.FontFamily, 9f, FontStyle.Bold), Rectangle.Inflate(e.Bounds, -8, 0), e.ColumnIndex == sortColumn ? Green : Muted, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+                TextRenderer.DrawText(e.Graphics, headerText, UiTheme.ListHeaderFont, Rectangle.Inflate(e.Bounds, -8, 0), e.ColumnIndex == sortColumn ? Green : Muted, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
             };
             files.DrawItem += delegate(object sender, DrawListViewItemEventArgs e) { e.DrawDefault = true; };
             files.DrawSubItem += delegate(object sender, DrawListViewSubItemEventArgs e) { e.DrawDefault = true; };
@@ -4409,7 +4777,7 @@ namespace FolderSeal
                 {
                     if (confirm.ShowDialog(this) != DialogResult.OK) return;
                 }
-                if (!await Run(delegate { session.Lock(); return "已安全锁定"; })) return;
+                if (!await Run(delegate { session.Lock(); return session.LastLockSkippedSnapshot ? "已快速锁定" : "已安全锁定"; })) return;
             }
 
             string downloadedPath = null;
@@ -4426,6 +4794,11 @@ namespace FolderSeal
                 return;
             }
             if (String.IsNullOrWhiteSpace(downloadedPath) || !File.Exists(downloadedPath)) return;
+            if (session != null && session.Open)
+            {
+                AppDialog.Show(this, "当前仍有未锁定的加密文件夹，为保护编辑中的明文数据，已停止自动退出安装。请先保存并锁定后重试。", "无法继续更新", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
 
             try
             {
@@ -4815,7 +5188,7 @@ namespace FolderSeal
                     pendingSource = args[1]; RefreshState("已接收待加密文件；请创建加密文件夹。");
                 }
             }
-            finally { handlingLaunch = false; }
+            finally { handlingLaunch = false; UpdateFileDropState(); }
         }
         private Task<bool> EnsureOpenPassword(bool fromLibrary)
         {
@@ -4883,6 +5256,8 @@ namespace FolderSeal
             bool editable = !busy && open && !cleanup;
             create.Enabled = !busy && !open;
             library.Enabled = !busy && !open;
+            settingsLink.Enabled = !busy && !closing;
+            if (!checkingUpdate) updateLink.Enabled = !busy && !closing;
             unlock.Enabled = !busy && has && !open; unlock.Visible = has && !open;
             lockButton.Enabled = !busy && open; lockButton.Visible = open;
             show.Enabled = importFiles.Enabled = importFolder.Enabled = refreshBtn.Enabled = fileFilter.Enabled = editable;
@@ -4963,9 +5338,32 @@ namespace FolderSeal
         }
         internal bool CanAcceptFileDrop()
         {
-            if (busy || handlingLaunch) return false;
+            if (busy || closing || handlingLaunch || !Enabled || OwnedForms.Any(x => x.Visible)) return false;
             if (session == null) return true;
             return session.Open && !session.CleanupPending;
+        }
+        private static bool IsProtectedSystemPath(string path)
+        {
+            if (String.IsNullOrWhiteSpace(path)) return true;
+            string full = Paths.Full(path);
+            string root = Path.GetPathRoot(full);
+            if (!String.IsNullOrEmpty(root) && String.Equals(full.TrimEnd('\\'), root.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase))
+                return true;
+            Environment.SpecialFolder[] blocked = new[]
+            {
+                Environment.SpecialFolder.Windows,
+                Environment.SpecialFolder.System,
+                Environment.SpecialFolder.ProgramFiles,
+                Environment.SpecialFolder.ProgramFilesX86,
+                Environment.SpecialFolder.CommonApplicationData
+            };
+            foreach (Environment.SpecialFolder folder in blocked)
+            {
+                string dir = Environment.GetFolderPath(folder);
+                if (!String.IsNullOrEmpty(dir) && (String.Equals(full, Paths.Full(dir), StringComparison.OrdinalIgnoreCase) || Paths.Inside(full, dir)))
+                    return true;
+            }
+            return false;
         }
         private void UpdateFileDropState()
         {
@@ -4989,8 +5387,9 @@ namespace FolderSeal
         {
             if (m.Msg == Native.WM_DROPFILES)
             {
-                string[] dropped = Native.ExtractDroppedFiles(m.WParam);
                 m.Result = IntPtr.Zero;
+                if (!CanAcceptFileDrop()) return;
+                string[] dropped = Native.ExtractDroppedFiles(m.WParam);
                 if (dropped != null && dropped.Length > 0)
                     BeginInvoke(new Action(async delegate { await HandleDroppedFiles(dropped); }));
                 return;
@@ -5000,6 +5399,14 @@ namespace FolderSeal
         internal async Task HandleDroppedFiles(string[] items)
         {
             if (items == null || items.Length == 0 || !CanAcceptFileDrop()) return;
+            foreach (string item in items)
+            {
+                if (IsProtectedSystemPath(item))
+                {
+                    AppDialog.Show(this, "为保护系统安全，不支持拖入系统目录、程序目录或磁盘根目录中的项目：\r\n\r\n" + item, "已拦截受保护路径", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+            }
             if (session == null)
             {
                 if (items.Length > 1)
@@ -5102,6 +5509,7 @@ namespace FolderSeal
                     File.SetAttributes(target, File.GetAttributes(target) & ~FileAttributes.ReadOnly);
                     File.Delete(target);
                 }
+                session.CancelPendingImport(relative);
                 return "已从编辑区删除：" + relative + "（点击保存并锁定后生效）";
             });
         }
@@ -5263,6 +5671,8 @@ namespace FolderSeal
             string entryWarning = null;
             await Run(delegate
             {
+                if (VaultAncestor(root) != null)
+                    throw new IOException("不能在已有加密文件夹内部创建新的加密文件夹，请选择其他位置。");
                 if (session != null) session.Dispose();
                 session = new VaultSession(root, sessionsBase, true);
                 session.Create(password); password = null;
@@ -5442,14 +5852,16 @@ namespace FolderSeal
             if (!session.CleanupPending)
             {
                 int pendingDelete = session.PendingSourceDeleteCount;
-                string detail = pendingDelete > 0
-                    ? "确认后将依次执行：生成新密文快照 → 逐文件核验 SHA-256 → 清理临时明文编辑区 → 永久删除本次导入的 " + pendingDelete + " 处原位置明文（不进入回收站）。"
-                    : "确认后将依次执行：生成新密文快照 → 逐文件核验 SHA-256 → 清理临时明文编辑区。全部完成后才会标记为“已锁定”。";
-                using (LockConfirmDialog confirm = new LockConfirmDialog(
-                    "保存并锁定",
-                    "请先保存并关闭正在编辑的文件",
-                    detail,
-                    "确认保存并锁定"))
+                bool cleanFastLock = pendingDelete == 0 && !session.HasWorkspaceChanges();
+                string title = cleanFastLock ? "快速锁定" : "保存并锁定";
+                string heading = cleanFastLock ? "未检测到文件改动，可直接快速锁定" : "请先保存并关闭正在编辑的文件";
+                string detail = cleanFastLock
+                    ? "检测到编辑区文件未做修改，确认后将跳过重新加密，直接核验原密文并清理临时明文编辑区。请先关闭正在查看的文件。"
+                    : (pendingDelete > 0
+                        ? "确认后将依次执行：生成新密文快照 → 逐文件核验 SHA-256 → 清理临时明文编辑区 → 永久删除本次导入的 " + pendingDelete + " 处原位置明文（不进入回收站）。"
+                        : "确认后将依次执行：生成新密文快照 → 逐文件核验 SHA-256 → 清理临时明文编辑区。全部完成后才会标记为“已锁定”。");
+                string confirmText = cleanFastLock ? "确认快速锁定" : "确认保存并锁定";
+                using (LockConfirmDialog confirm = new LockConfirmDialog(title, heading, detail, confirmText))
                 {
                     if (confirm.ShowDialog(this) != DialogResult.OK) return;
                 }
@@ -5463,6 +5875,8 @@ namespace FolderSeal
                     return "已锁定 · 已验证加密内容，但部分原位置明文未删除，请查看提示";
                 if (session.LastSourceDeletedCount > 0)
                     return "已锁定 · 已验证加密内容，明文工作区及 " + session.LastSourceDeletedCount + " 处原位置明文已永久删除";
+                if (session.LastLockSkippedSnapshot)
+                    return "已快速锁定 · 文件未修改，已跳过重算快照并清理明文工作区";
                 return "已锁定 · 已验证加密内容，明文工作区已清理";
             });
             if (ok && sourceWarnings != null && sourceWarnings.Count > 0)
@@ -5548,6 +5962,7 @@ namespace FolderSeal
         }
         private async void DeleteVault(object sender, EventArgs e)
         {
+            if (busy || session == null || session.Open) return;
             string root = session.Root;
             if (AppDialog.Show(this, "将永久删除以下加密文件夹及其中所有文件：\r\n\r\n" + root + "\r\n\r\n此操作不进入回收站。是否继续验证密码？", "删除加密文件夹", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2, AppDialogTone.Danger) != DialogResult.Yes) return;
             string password = AskPassword(false, "删除前再次验证密码", root); if (password == null) return;
@@ -5597,7 +6012,7 @@ namespace FolderSeal
                 {
                     using (SolidBrush bg = new SolidBrush(UiTheme.Surface)) e.Graphics.FillRectangle(bg, e.Bounds);
                     using (Pen sep = new Pen(UiTheme.Line)) e.Graphics.DrawLine(sep, e.Bounds.Left, e.Bounds.Bottom - 1, e.Bounds.Right, e.Bounds.Bottom - 1);
-                    TextRenderer.DrawText(e.Graphics, e.Header.Text, new Font("Microsoft YaHei UI", 9f, FontStyle.Bold), Rectangle.Inflate(e.Bounds, -8, 0), UiTheme.Muted, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+                    TextRenderer.DrawText(e.Graphics, e.Header.Text, UiTheme.ListHeaderFont, Rectangle.Inflate(e.Bounds, -8, 0), UiTheme.Muted, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
                 };
                 list.DrawItem += delegate(object s, DrawListViewItemEventArgs e) { e.DrawDefault = true; };
                 list.DrawSubItem += delegate(object s, DrawListViewSubItemEventArgs e) { e.DrawDefault = true; };
@@ -5665,7 +6080,7 @@ namespace FolderSeal
             {
                 if (confirm.ShowDialog(this) != DialogResult.OK) return;
             }
-            if (await Run(delegate { session.Lock(); return "已安全锁定"; })) { closing = true; Close(); }
+            if (await Run(delegate { session.Lock(); return session.LastLockSkippedSnapshot ? "已快速锁定" : "已安全锁定"; })) { closing = true; Close(); }
         }
     }
 

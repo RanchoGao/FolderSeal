@@ -37,6 +37,19 @@ function Assert-Test([bool]$condition, [string]$message) {
     if (-not $condition) { throw $message }
     $taskChecks.Add($message)
 }
+function Invoke-WithTimeout([string]$filePath, [string[]]$arguments, [int]$timeoutMs, [string]$label) {
+    $proc = Start-Process -FilePath $filePath -ArgumentList $arguments -WindowStyle Hidden -PassThru
+    if (-not $proc.WaitForExit($timeoutMs)) {
+        try { $proc.Kill() } catch { }
+        throw "$label 超时未退出（超过 ${timeoutMs}ms，可能弹出阻塞窗口）。"
+    }
+    return $proc.ExitCode
+}
+$taskShellKeys = @(
+    'HKCU:\Software\Classes\Directory\shell\FolderSeal.Seal',
+    'HKCU:\Software\Classes\*\shell\FolderSeal.Seal',
+    'HKCU:\Software\Classes\Directory\shell\FolderSeal.Open'
+)
 New-Item -ItemType Directory -Path $taskArtifacts -Force | Out-Null
 try {
     if (-not ([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw '安装包验证需要管理员授权。' }
@@ -44,12 +57,22 @@ try {
     if ((Test-Path -LiteralPath $taskPrograms) -or (Test-Path -LiteralPath $taskLegacyPrograms)) { throw '开始菜单中已有同名软件，停止测试。' }
     if ((Test-Path -LiteralPath $taskDesktopLink) -or (Test-Path -LiteralPath $taskLegacyDesktopLink)) { throw '公共桌面中已有同名快捷方式，停止测试。' }
     New-Item -ItemType Directory -Path $taskFixture | Out-Null
-    $taskProcess = Start-Process -FilePath $taskInstaller -ArgumentList @('/S', "/D=$taskInstall") -WindowStyle Hidden -Wait -PassThru
-    Assert-Test ($taskProcess.ExitCode -eq 0) '静默安装成功'
+    $taskBadDir = Join-Path $taskFixture 'non-empty-unrelated'
+    New-Item -ItemType Directory -Path $taskBadDir | Out-Null
+    [IO.File]::WriteAllText((Join-Path $taskBadDir 'unrelated.txt'), 'unrelated')
+    $badCode = Invoke-WithTimeout $taskInstaller @('/S', "/D=$taskBadDir") 15000 '非空无关目录静默安装'
+    Assert-Test ($badCode -ne 0 -and -not (Test-Path -LiteralPath (Join-Path $taskBadDir 'FolderSeal.exe'))) '静默安装到非空无关目录快速失败且无弹窗阻塞'
+    $installCode = Invoke-WithTimeout $taskInstaller @('/S', "/D=$taskInstall") 60000 '静默安装'
+    Assert-Test ($installCode -eq 0) '静默安装成功'
     Assert-Test (Test-Path -LiteralPath (Join-Path $taskInstall 'FolderSeal.exe')) '支持包含中文和空格的安装路径'
     Assert-Test ((Get-FileHash -LiteralPath (Join-Path $taskInstall 'FolderSeal.exe')).Hash -eq $ExpectedPayloadSha256) '安装后程序与指定的打包程序逐字节一致'
     Assert-Test (Test-Path -LiteralPath (Join-Path $taskInstall 'Uninstall.exe')) '卸载程序已生成'
     Assert-Test (Test-Path -LiteralPath (Join-Path $taskInstall '使用说明.txt')) '中文使用说明已安装'
+    Assert-Test (Test-Path -LiteralPath (Join-Path $taskInstall 'LICENSE')) 'MIT 许可证文件已安装'
+    Assert-Test ((Get-Content -LiteralPath (Join-Path $taskInstall '.folderseal-product') -Raw).Trim() -ceq 'EurekaGao.FolderSeal.v1') '产品标记文件已生成且内容正确'
+    foreach ($shellKey in $taskShellKeys) {
+        Assert-Test (Test-Path -LiteralPath $shellKey) "已注册资源管理器右键菜单：$shellKey"
+    }
     $taskEntry = Get-ItemProperty -LiteralPath $taskRegistry
     Assert-Test ($taskEntry.Publisher -eq 'EurekaGao' -and $taskEntry.DisplayVersion -eq $taskVersion) "应用列表中的发布者和版本正确（$taskVersion）"
     Assert-Test ($taskEntry.UninstallString -eq ('"' + (Join-Path $taskInstall 'Uninstall.exe') + '"')) '卸载入口正确处理带空格路径'
@@ -69,15 +92,20 @@ try {
     $taskLink = $taskShell.CreateShortcut($taskLegacyDesktopLink)
     $taskLink.TargetPath = Join-Path $taskInstall 'FolderSeal.exe'
     $taskLink.Save()
-    $taskProcess = Start-Process -FilePath $taskInstaller -ArgumentList @('/S', "/D=$taskInstall") -WindowStyle Hidden -Wait -PassThru
-    Assert-Test ($taskProcess.ExitCode -eq 0 -and (Get-FileHash -LiteralPath $taskSentinel).Hash -eq $taskSentinelHash) '重复安装保留安装目录中的非程序文件'
+    $reinstallCode = Invoke-WithTimeout $taskInstaller @('/S', "/D=$taskInstall") 60000 '重复静默安装'
+    Assert-Test ($reinstallCode -eq 0 -and (Get-FileHash -LiteralPath $taskSentinel).Hash -eq $taskSentinelHash) '重复安装保留安装目录中的非程序文件'
     Assert-Test ((Test-Path -LiteralPath $taskDesktopLink -PathType Leaf) -and -not (Test-Path -LiteralPath $taskLegacyDesktopLink)) '旧桌面入口已迁移至当前名称'
     Assert-Test ($taskShell.CreateShortcut($taskDesktopLink).TargetPath -eq (Join-Path $taskInstall 'FolderSeal.exe')) '迁移后的桌面入口指向已安装程序'
-    $taskProcess = Start-Process -FilePath (Join-Path $taskInstall 'Uninstall.exe') -ArgumentList '/S' -WindowStyle Hidden -Wait -PassThru
+    $uninstallCode = Invoke-WithTimeout (Join-Path $taskInstall 'Uninstall.exe') @('/S') 60000 '静默卸载'
+    Assert-Test ($uninstallCode -eq 0) '静默卸载正常退出'
     for ($taskAttempt = 0; $taskAttempt -lt 40 -and (Test-Path -LiteralPath $taskRegistry); $taskAttempt++) { Start-Sleep -Milliseconds 200 }
     Assert-Test (-not (Test-Path -LiteralPath (Join-Path $taskInstall 'FolderSeal.exe'))) '卸载移除程序'
+    Assert-Test (-not (Test-Path -LiteralPath (Join-Path $taskInstall 'LICENSE'))) '卸载移除许可证文件'
     Assert-Test (-not (Test-Path -LiteralPath $taskRegistry)) '卸载清除应用列表入口'
     Assert-Test (-not (Test-Path -LiteralPath $taskDesktopLink)) '卸载清除当前桌面入口'
+    foreach ($shellKey in $taskShellKeys) {
+        Assert-Test (-not (Test-Path -LiteralPath $shellKey)) "卸载清除资源管理器右键菜单：$shellKey"
+    }
     foreach ($taskName in $taskMenuEntries.Keys) {
         Assert-Test (-not (Test-Path -LiteralPath (Join-Path $taskPrograms $taskName))) "卸载清除开始菜单入口 $taskName"
     }
@@ -92,6 +120,19 @@ try {
     exit 0
 }
 catch {
-    [ordered]@{ Passed = $false; Checks = $taskChecks.ToArray(); Error = $_.Exception.Message; Fixture = $taskFixture } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $taskReport -Encoding utf8
+    $cleanupError = $null
+    try {
+        $uninst = Join-Path $taskInstall 'Uninstall.exe'
+        if ((Test-Path -LiteralPath $uninst) -and (Test-Path -LiteralPath $taskRegistry)) {
+            $p = Start-Process -FilePath $uninst -ArgumentList '/S' -WindowStyle Hidden -PassThru
+            if (-not $p.WaitForExit(30000)) { try { $p.Kill() } catch { } }
+            for ($i = 0; $i -lt 25 -and (Test-Path -LiteralPath $taskRegistry); $i++) { Start-Sleep -Milliseconds 200 }
+        }
+        if (Test-Path -LiteralPath $taskDesktopLink) { Remove-Item -LiteralPath $taskDesktopLink -Force -ErrorAction SilentlyContinue }
+        if (Test-Path -LiteralPath $taskLegacyDesktopLink) { Remove-Item -LiteralPath $taskLegacyDesktopLink -Force -ErrorAction SilentlyContinue }
+        if (Test-Path -LiteralPath $taskPrograms) { Remove-Item -LiteralPath $taskPrograms -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+    catch { $cleanupError = $_.Exception.Message }
+    [ordered]@{ Passed = $false; Checks = $taskChecks.ToArray(); Error = $_.Exception.Message; CleanupError = $cleanupError; Fixture = $taskFixture } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $taskReport -Encoding utf8
     exit 1
 }

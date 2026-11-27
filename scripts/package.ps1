@@ -1,6 +1,6 @@
 ﻿# Copyright (c) 2026 EurekaGao. MIT License.
 [CmdletBinding()]
-param([string]$NsisCompiler)
+param([string]$NsisCompiler, [switch]$ValidateAll)
 $ErrorActionPreference = 'Stop'
 $taskRoot = Split-Path -Parent $PSScriptRoot
 if (-not $NsisCompiler) {
@@ -20,10 +20,14 @@ $taskInstallerScript = Join-Path $taskRoot 'installer\FolderSeal.nsi'
 $taskVersion = [regex]::Match((Get-Content -LiteralPath $taskInstallerScript -Raw), '!define VERSION "([^"]+)"').Groups[1].Value
 if (-not $taskVersion) { throw '无法从 installer/FolderSeal.nsi 读取 VERSION。' }
 # Always compile from this checkout before packaging; do not package a stale EXE.
-& (Join-Path $PSScriptRoot 'build.ps1')
+if ($ValidateAll) {
+    & (Join-Path $PSScriptRoot 'build.ps1') -ValidateAll
+} else {
+    & (Join-Path $PSScriptRoot 'build.ps1')
+}
 $taskDist = Join-Path $taskRoot 'artifacts\dist'
 New-Item -ItemType Directory -Path $taskDist -Force | Out-Null
-& $NsisCompiler /INPUTCHARSET UTF8 /V2 "/DPROJECT_ROOT=$taskRoot" $taskInstallerScript
+& $NsisCompiler /INPUTCHARSET UTF8 /V2 /WX "/DPROJECT_ROOT=$taskRoot" $taskInstallerScript
 if ($LASTEXITCODE -ne 0) { throw '安装包编译失败。' }
 $taskInstaller = Join-Path $taskDist "FolderSeal-$taskVersion-Setup.exe"
 $taskHash = Get-FileHash -LiteralPath $taskInstaller -Algorithm SHA256

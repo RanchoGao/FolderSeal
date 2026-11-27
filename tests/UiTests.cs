@@ -365,6 +365,11 @@ internal static class UiTests
                 Render(lockDialog, output, "lock-confirm");
                 Check(lockDialog.AcceptButton != null && lockDialog.CancelButton != null, "branded lock confirm dialog provides explicit confirm and cancel");
             }
+            using (LockConfirmDialog fastLockDialog = new LockConfirmDialog("快速锁定", "未检测到文件改动，可直接快速锁定", "检测到编辑区文件未做修改，确认后将跳过重新加密，直接核验原密文并清理临时明文编辑区。请先关闭正在查看的文件。", "确认快速锁定"))
+            {
+                Render(fastLockDialog, output, "lock-confirm-fast");
+                Check(fastLockDialog.AcceptButton != null && ((Button)fastLockDialog.AcceptButton).Text == "确认快速锁定", "fast-lock confirm dialog renders fast-lock action text");
+            }
             using (AppDialog infoDialog = new AppDialog("操作未完成", "编辑区中已有同名文件：示例.txt\r\n明文工作区仍保留。", MessageBoxButtons.OK, AppDialogTone.Warning, false))
             {
                 Render(infoDialog, output, "app-dialog-warning");

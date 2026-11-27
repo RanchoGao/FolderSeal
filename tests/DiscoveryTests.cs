@@ -25,7 +25,7 @@ internal static class DiscoveryTests
             string user = Path.Combine(root, "user"), sample = Path.Combine(root, "generated-library-" + new string('a', 32), "original"), recycle = Path.Combine(root, "$RECYCLE.BIN", "generated-account", "original");
             foreach (string name in new[] { "original", "changed", "示例资料", "generated-library-personal" }) Candidate(seed, Path.Combine(user, name));
             Candidate(seed, sample); Candidate(seed, recycle);
-            foreach (string prefix in new[] { "entry-test-", "generated-test-", "generated-ui-", ".setup-test-" }) Candidate(seed, Path.Combine(root, prefix + new string('b', 32), "nested"));
+            foreach (string prefix in new[] { "entry-test-", "generated-test-", "generated-ui-", "generated-instance-", "shell-test-", ".setup-test-" }) Candidate(seed, Path.Combine(root, prefix + new string('b', 32), "nested"));
             ScanProgress scan = VaultDiscovery.Scan(new[] { root }, CancellationToken.None, null);
             Check(scan.Count == 4, "scan excludes all recognized generated fixtures and recycle bin");
             Check(scan.FoundPaths.All(x => Paths.Inside(x, user)), "only original user locations returned");

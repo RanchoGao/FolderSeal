@@ -158,12 +158,12 @@ internal static class UpdateTests
             string detected;
             Check(UpdateInstaller.TryGetInstalledDirectory(installedDir, out detected) && String.Equals(detected, installedDir, StringComparison.OrdinalIgnoreCase), "installed directory detected via product marker");
             Check(!UpdateInstaller.TryGetInstalledDirectory(portableDir, out detected), "portable directory without marker is not treated as installed");
-            string silentScript = UpdateInstaller.BuildApplyScript(@"C:\Temp\FolderSeal-2.12.0-Setup.exe", @"C:\Program Files\EurekaGao\FolderSeal", 4321, @"C:\Temp\apply.ps1");
-            Check(silentScript.Contains("/S /D=") && silentScript.Contains("4321") && silentScript.Contains("FolderSeal.exe"), "silent upgrade script passes unquoted /S /D= and relaunches exe");
-            string portableScript = UpdateInstaller.BuildApplyScript(@"C:\Temp\FolderSeal-2.12.0-Setup.exe", null, 4321, @"C:\Temp\apply.ps1");
-            Check(!portableScript.Contains("/S /D="), "portable upgrade script launches interactive installer instead of silent overwrite");
+            string silentScript = UpdateInstaller.BuildApplyScript(@"C:\Temp\FolderSeal-2.12.0-Setup.exe", @"C:\Program Files\EurekaGao\FolderSeal", 4321, @"C:\Temp\apply.ps1", sampleHash.ToUpperInvariant());
+            Check(silentScript.Contains("/S /D=") && silentScript.Contains("4321") && silentScript.Contains("FolderSeal.exe") && silentScript.Contains("Get-FileHash") && silentScript.Contains("WaitForExit(180000)") && !silentScript.Contains("} else {\r\n  Start-Process -FilePath $installer"), "silent upgrade script verifies hash, uses bounded wait, and omits blind interactive fallback");
+            string portableScript = UpdateInstaller.BuildApplyScript(@"C:\Temp\FolderSeal-2.12.0-Setup.exe", null, 4321, @"C:\Temp\apply.ps1", sampleHash.ToUpperInvariant());
+            Check(!portableScript.Contains("/S /D=") && portableScript.Contains("Get-FileHash"), "portable upgrade script verifies hash and launches interactive installer");
 
-            // End-to-end streaming download, redirect following, SHA-256 verification and mismatch rejection
+            // End-to-end streaming download, redirect following, SHA-256 verification and fail-closed rejection
             byte[] payload = new byte[48 * 1024];
             for (int i = 0; i < payload.Length; i++) payload[i] = (byte)(i % 251);
             string payloadHash = Sha256Hex(payload);
@@ -174,6 +174,7 @@ internal static class UpdateTests
                 if (path == "/setup.exe") return Tuple.Create(200, "", payload);
                 if (path == "/sums-ok") return Tuple.Create(200, "", Encoding.ASCII.GetBytes(payloadHash + "  FolderSeal-2.12.0-Setup.exe\r\n"));
                 if (path == "/sums-bad") return Tuple.Create(200, "", Encoding.ASCII.GetBytes(badHash + "  FolderSeal-2.12.0-Setup.exe\r\n"));
+                if (path == "/sums-missing") return Tuple.Create(200, "", Encoding.ASCII.GetBytes(payloadHash + "  Other.exe\r\n"));
                 return Tuple.Create(404, "", new byte[0]);
             }))
             {
@@ -204,6 +205,54 @@ internal static class UpdateTests
                 try { UpdateInstaller.DownloadAsync(badInfo, Path.Combine(tempWork, "bad-dl"), allowLocal, null, CancellationToken.None).GetAwaiter().GetResult(); }
                 catch (InvalidDataException) { hashRejected = true; }
                 Check(hashRejected && !File.Exists(Path.Combine(tempWork, "bad-dl", "FolderSeal-2.12.0-Setup.exe.part")), "SHA-256 mismatch rejects download and cleans temporary file");
+
+                UpdateInfo noChecksumInfo = new UpdateInfo
+                {
+                    Version = new Version(2, 12, 0, 0),
+                    FileName = "FolderSeal-2.12.0-Setup.exe",
+                    ExpectedSize = payload.Length,
+                    DownloadUrl = "http://127.0.0.1:" + server.Port + "/setup.exe",
+                    ChecksumUrl = null
+                };
+                bool noChecksumRejected = false;
+                try { UpdateInstaller.DownloadAsync(noChecksumInfo, Path.Combine(tempWork, "no-sum-dl"), allowLocal, null, CancellationToken.None).GetAwaiter().GetResult(); }
+                catch (InvalidDataException) { noChecksumRejected = true; }
+                Check(noChecksumRejected && !File.Exists(Path.Combine(tempWork, "no-sum-dl", "FolderSeal-2.12.0-Setup.exe.part")), "missing SHA256SUMS.txt URL fails closed and cleans temporary file");
+
+                UpdateInfo missingEntryInfo = new UpdateInfo
+                {
+                    Version = new Version(2, 12, 0, 0),
+                    FileName = "FolderSeal-2.12.0-Setup.exe",
+                    ExpectedSize = payload.Length,
+                    DownloadUrl = "http://127.0.0.1:" + server.Port + "/setup.exe",
+                    ChecksumUrl = "http://127.0.0.1:" + server.Port + "/sums-missing"
+                };
+                bool missingEntryRejected = false;
+                try { UpdateInstaller.DownloadAsync(missingEntryInfo, Path.Combine(tempWork, "missing-entry-dl"), allowLocal, null, CancellationToken.None).GetAwaiter().GetResult(); }
+                catch (InvalidDataException) { missingEntryRejected = true; }
+                Check(missingEntryRejected && !File.Exists(Path.Combine(tempWork, "missing-entry-dl", "FolderSeal-2.12.0-Setup.exe.part")), "missing target entry in SHA256SUMS.txt fails closed");
+
+                UpdateInfo badSizeInfo = new UpdateInfo
+                {
+                    Version = new Version(2, 12, 0, 0),
+                    FileName = "FolderSeal-2.12.0-Setup.exe",
+                    ExpectedSize = payload.Length - 1,
+                    DownloadUrl = "http://127.0.0.1:" + server.Port + "/setup.exe",
+                    ChecksumUrl = "http://127.0.0.1:" + server.Port + "/sums-ok"
+                };
+                bool sizeRejected = false;
+                try { UpdateInstaller.DownloadAsync(badSizeInfo, Path.Combine(tempWork, "bad-size-dl"), allowLocal, null, CancellationToken.None).GetAwaiter().GetResult(); }
+                catch (InvalidDataException) { sizeRejected = true; }
+                Check(sizeRejected && !File.Exists(Path.Combine(tempWork, "bad-size-dl", "FolderSeal-2.12.0-Setup.exe.part")), "size mismatch rejects download and cleans temporary file");
+
+                using (CancellationTokenSource cancelledCts = new CancellationTokenSource())
+                {
+                    cancelledCts.Cancel();
+                    bool cancelled = false;
+                    try { UpdateInstaller.DownloadAsync(okInfo, Path.Combine(tempWork, "cancel-dl"), allowLocal, null, cancelledCts.Token).GetAwaiter().GetResult(); }
+                    catch (OperationCanceledException) { cancelled = true; }
+                    Check(cancelled && !File.Exists(Path.Combine(tempWork, "cancel-dl", "FolderSeal-2.12.0-Setup.exe.part")), "cancelled download throws OperationCanceledException and leaves no .part");
+                }
             }
 
             Console.WriteLine("SUCCESS " + checks + " update checks"); return 0;

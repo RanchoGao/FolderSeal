@@ -1,0 +1,120 @@
+/*
+ * 密封夹（FolderSeal）设计系统 CSS 变量
+ * 由 scripts/sync-design-tokens.ps1 根据 tokens.json 自动生成，请勿手工修改。
+ */
+:root {
+  /* Brand */
+  --primary: #1F5E45;
+  --primary-hover: #174B36;
+  --primary-active: #123E2C;
+  --primary-tint: #EAF3EE;
+  --primary-tint-hover: #DCECE3;
+  --primary-tint-active: #CFE4D9;
+  --primary-border: #C6DDD0;
+  --primary-border-hover: #ACCBB9;
+  --primary-disabled-bg: #91AFA2;
+  --primary-disabled-text: #F0F5F2;
+
+  /* Neutral */
+  --canvas: #FFFFFF;
+  --surface: #F5F7F4;
+  --surface-2: #EFF3EC;
+  --surface-subtle: #FBFDFB;
+  --surface-hover: #FAFCFA;
+  --row-hover: #F5F9F6;
+  --ink: #1E2E26;
+  --muted: #5E7166;
+  --muted-2: #829489;
+  --line: #DDE5DC;
+  --line-hover: #C7D5C8;
+  --line-soft: #EAEFEA;
+  --dashed-border: #BDD0C3;
+  --win-border: #C8D4C9;
+
+  /* Semantic: Amber */
+  --amber: #8A5612;
+  --amber-bg: #FFF6E5;
+  --amber-border: #F2D49B;
+  --amber-bar: #C8831E;
+  --amber-strong: #6E430B;
+
+  /* Semantic: Red */
+  --red: #B42E27;
+  --red-bg: #FEF2F2;
+  --red-bg-active: #FAE2E2;
+  --red-border: #F5C2BF;
+  --red-border-hover: #E59A95;
+
+  /* File Type Badges */
+  --ft-doc-bg: #EBF3FA; --ft-doc-border: #CBE0F2; --ft-doc-fg: #275E8E;
+  --ft-xls-bg: #EAF5EC; --ft-xls-border: #C4E4CC; --ft-xls-fg: #256A3F;
+  --ft-ppt-bg: #FDF0EA; --ft-ppt-border: #F5D3C4; --ft-ppt-fg: #AE4827;
+  --ft-pdf-bg: #FCEEEB; --ft-pdf-border: #F4CCC4; --ft-pdf-fg: #A8382B;
+  --ft-md-bg: #F2EEF9; --ft-md-border: #DDD2F0; --ft-md-fg: #5B418F;
+  --ft-img-bg: #E8F6F6; --ft-img-border: #C1E4E6; --ft-img-fg: #1F6C70;
+  --ft-zip-bg: #FDF4E3; --ft-zip-border: #F0D8AC; --ft-zip-fg: #8D5B12;
+  --ft-other-bg: #F0F3F0; --ft-other-border: #DAE2DC; --ft-other-fg: #55665B;
+
+  /* Marketing Surface Variant (产品介绍页 / 官网深色 Hero) */
+  --mkt-paper: #F3F5F0;
+  --mkt-ink: #152921;
+  --mkt-muted: #4A5E54;
+  --mkt-line: #CBD6CC;
+  --mkt-forest: #102D24;
+  --mkt-forest-glow: #235442;
+  --mkt-green: #205641;
+  --mkt-lime: #DAEF99;
+  --mkt-lime-hover: #E8F7BE;
+  --mkt-on-dark: #C7D9CB;
+  --mkt-on-dark-title: #F7FBF2;
+  --mkt-on-lime: #172B19;
+  --mkt-feature-band: #E4ECE1;
+  --mkt-focus-ring: #B45B14;
+  --mkt-focus-ring-dark: #FFDCAD;
+
+  /* Typography */
+  --font-ui: "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif;
+  --font-mono: Consolas, "Cascadia Mono", monospace;
+  --text-caption: 12px;
+  --text-body-sm: 12.5px;
+  --text-body: 13.5px;
+  --text-body-lg: 14.5px;
+  --text-title-sm: 15px;
+  --text-title: 17px;
+  --text-brand: 19px;
+  --text-headline: 21px;
+
+  /* Radius */
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-card: 10px;
+  --r-lg: 12px;
+  --r-hero: 24px;
+  --r-pill: 999px;
+
+  /* Spacing */
+  --sp-xs: 4px;
+  --sp-sm: 8px;
+  --sp-md: 12px;
+  --sp-lg: 16px;
+  --sp-xl: 20px;
+  --sp-2xl: 28px;
+
+  /* Sizing */
+  --h-btn: 36px;
+  --h-btn-sm: 31px;
+  --h-btn-side: 40px;
+  --h-input: 36px;
+  --w-sidebar: 224px;
+  --h-titlebar: 38px;
+  --h-statusbar: 32px;
+  --h-row: 44px;
+  --h-badge: 24px;
+
+  /* Shadows */
+  --shadow-win: 0 22px 60px rgba(24,46,35,.14), 0 2px 10px rgba(24,46,35,.06);
+  --shadow-dlg: 0 24px 70px rgba(18,36,27,.26), 0 4px 16px rgba(18,36,27,.10);
+  --shadow-menu: 0 12px 32px rgba(20,40,30,.16);
+  --shadow-card-hover: 0 8px 24px rgba(31,94,69,.08);
+  --shadow-toast: 0 10px 30px rgba(0,0,0,.22);
+}

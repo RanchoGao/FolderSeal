@@ -111,6 +111,16 @@ internal static class ShellTests
             Assert(File.ReadAllText(Path.Combine(vault.Work, "季度 报表.docx"), Encoding.UTF8) == "fixture-payload", "sealed file restored on unlock");
             vault.Lock();
         }
+        // Regression for R-042: sealing with hideEntry=true omits .lnk, marks vault Hidden|System, and supports restoring entry.
+        string hiddenSrc = Path.Combine(container, "机密备忘.txt");
+        File.WriteAllText(hiddenSrc, "hidden-payload", Encoding.UTF8);
+        MainForm.SealOutcome hiddenOutcome = MainForm.SealPath(hiddenSrc, sessions, Password, false, true);
+        Assert(!File.Exists(hiddenSrc), "hidden-entry seal deletes plaintext source");
+        Assert(!File.Exists(hiddenOutcome.Root + ".lnk"), "hidden-entry seal does not create .lnk shortcut");
+        FileAttributes hiddenAttrs = File.GetAttributes(hiddenOutcome.Root);
+        Assert((hiddenAttrs & (FileAttributes.Hidden | FileAttributes.System)) == (FileAttributes.Hidden | FileAttributes.System), "hidden-entry seal marks vault directory Hidden|System");
+        FolderEntry.Create(hiddenOutcome.Root, false);
+        Assert(File.Exists(hiddenOutcome.Root + ".lnk"), "hidden-entry vault can restore .lnk shortcut");
     }
     private static void SealFolder(string container)
     {

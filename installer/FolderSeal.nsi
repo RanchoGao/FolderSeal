@@ -29,6 +29,7 @@ VIAddVersionKey /LANG=2052 "ProductName" "${PRODUCT}"
 VIAddVersionKey /LANG=2052 "CompanyName" "EurekaGao"
 VIAddVersionKey /LANG=2052 "FileDescription" "密封夹安装程序"
 VIAddVersionKey /LANG=2052 "FileVersion" "${VERSION}"
+VIAddVersionKey /LANG=2052 "ProductVersion" "${VERSION}"
 VIAddVersionKey /LANG=2052 "LegalCopyright" "Copyright (c) EurekaGao"
 
 !define MUI_ABORTWARNING
@@ -55,6 +56,10 @@ VIAddVersionKey /LANG=2052 "LegalCopyright" "Copyright (c) EurekaGao"
 Function .onInit
   SetShellVarContext all
   ${IfNot} ${AtLeastWin10}
+    ${If} ${Silent}
+      SetErrorLevel 10
+      Abort
+    ${EndIf}
     MessageBox MB_OK|MB_ICONSTOP "需要 Windows 10 或更新版本。"
     Abort
   ${EndIf}
@@ -63,6 +68,10 @@ Function .onInit
   ${EndIf}
   ReadRegDWORD $0 HKLM "SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full" "Release"
   ${If} $0 < 461808
+    ${If} ${Silent}
+      SetErrorLevel 11
+      Abort
+    ${EndIf}
     MessageBox MB_OK|MB_ICONSTOP "此软件需要 .NET Framework 4.7.2 或更新版本。请先安装兼容运行时。"
     Abort
   ${EndIf}
@@ -78,7 +87,49 @@ Function .onInit
   ${EndIf}
 FunctionEnd
 
+Var IsUpgradeInstall
+Var HadDesktopShortcut
+
+Function TrimMarkerLine
+  ; Strip trailing CR/LF/spaces from $1 so CRLF or trailing whitespace matches C# Trim().
+  trim_loop:
+    StrLen $2 $1
+    IntCmp $2 0 trim_done trim_done
+    IntOp $2 $2 - 1
+    StrCpy $3 $1 1 $2
+    StrCmp $3 "$\r" trim_cut
+    StrCmp $3 "$\n" trim_cut
+    StrCmp $3 " " trim_cut
+    StrCmp $3 "$\t" trim_cut
+    Goto trim_done
+  trim_cut:
+    StrCpy $1 $1 $2
+    Goto trim_loop
+  trim_done:
+FunctionEnd
+
+Function un.TrimMarkerLine
+  trim_loop:
+    StrLen $2 $1
+    IntCmp $2 0 trim_done trim_done
+    IntOp $2 $2 - 1
+    StrCpy $3 $1 1 $2
+    StrCmp $3 "$\r" trim_cut
+    StrCmp $3 "$\n" trim_cut
+    StrCmp $3 " " trim_cut
+    StrCmp $3 "$\t" trim_cut
+    Goto trim_done
+  trim_cut:
+    StrCpy $1 $1 $2
+    Goto trim_loop
+  trim_done:
+FunctionEnd
+
 Function CheckInstallDirectory
+  StrCpy $IsUpgradeInstall "0"
+  StrCpy $HadDesktopShortcut "0"
+  IfFileExists "$DESKTOP\${PRODUCT}.lnk" 0 +2
+    StrCpy $HadDesktopShortcut "1"
   ; A fresh install must use an empty directory; upgrades require our exact marker.
   IfFileExists "$INSTDIR\.folderseal-product" upgrade fresh
   upgrade:
@@ -87,7 +138,10 @@ Function CheckInstallDirectory
     IfErrors invalid
     FileRead $0 $1
     FileClose $0
-    StrCmp $1 "${PRODUCT_MARKER}" valid invalid
+    Call TrimMarkerLine
+    StrCmp $1 "${PRODUCT_MARKER}" 0 invalid
+    StrCpy $IsUpgradeInstall "1"
+    Goto valid
   fresh:
     ClearErrors
     FindFirst $0 $1 "$INSTDIR\*"
@@ -105,6 +159,10 @@ Function CheckInstallDirectory
     FindClose $0
     Goto valid
   invalid:
+    ${If} ${Silent}
+      SetErrorLevel 12
+      Abort
+    ${EndIf}
     MessageBox MB_OK|MB_ICONSTOP "为避免覆盖你的文件，请选择一个空文件夹，或本软件原来的安装目录。"
     Abort
   valid:
@@ -118,6 +176,7 @@ Section "程序和开始菜单入口（必选）" MainSection
   ClearErrors
   File /oname=FolderSeal.exe "${PROJECT_ROOT}\artifacts\bin\FolderSeal.exe"
   File /oname=使用说明.txt "${PROJECT_ROOT}\docs\安装版使用说明.txt"
+  File /oname=LICENSE "${PROJECT_ROOT}\LICENSE"
   IfErrors install_failed
   FileOpen $0 "$INSTDIR\.folderseal-product" w
   FileWrite $0 "${PRODUCT_MARKER}"
@@ -147,8 +206,16 @@ Section "程序和开始菜单入口（必选）" MainSection
   WriteRegStr HKLM "${UNINSTALL_KEY}" "QuietUninstallString" '$\"$INSTDIR\Uninstall.exe$\" /S'
   WriteRegDWORD HKLM "${UNINSTALL_KEY}" "NoModify" 1
   WriteRegDWORD HKLM "${UNINSTALL_KEY}" "NoRepair" 1
-  WriteRegDWORD HKLM "${UNINSTALL_KEY}" "EstimatedSize" 512
-  ; Explorer verbs for the current user; the program switch and uninstaller remove the same keys.
+  WriteRegDWORD HKLM "${UNINSTALL_KEY}" "EstimatedSize" 1300
+  ; Explorer verbs for the current user: write on fresh install, or refresh on upgrade only if user kept them enabled.
+  ${If} $IsUpgradeInstall == "0"
+    Goto write_explorer_verbs
+  ${EndIf}
+  ReadRegStr $0 HKCU "Software\Classes\Directory\shell\FolderSeal.Seal\command" ""
+  ${If} $0 == ""
+    Goto skip_explorer_verbs
+  ${EndIf}
+  write_explorer_verbs:
   WriteRegStr HKCU "Software\Classes\Directory\shell\FolderSeal.Seal" "" "加密此文件夹（密封夹）"
   WriteRegStr HKCU "Software\Classes\Directory\shell\FolderSeal.Seal" "Icon" "$\"$INSTDIR\FolderSeal.exe$\",0"
   WriteRegStr HKCU "Software\Classes\Directory\shell\FolderSeal.Seal" "MultiSelectModel" "Single"
@@ -160,16 +227,27 @@ Section "程序和开始菜单入口（必选）" MainSection
   WriteRegStr HKCU "Software\Classes\Directory\shell\FolderSeal.Open" "" "用密封夹打开"
   WriteRegStr HKCU "Software\Classes\Directory\shell\FolderSeal.Open" "Icon" "$\"$INSTDIR\FolderSeal.exe$\",0"
   WriteRegStr HKCU "Software\Classes\Directory\shell\FolderSeal.Open\command" "" "$\"$INSTDIR\FolderSeal.exe$\" --open-vault $\"%1$\""
+  skip_explorer_verbs:
   Goto installed
   install_failed:
+    ${If} ${Silent}
+      SetErrorLevel 13
+      Abort
+    ${EndIf}
     MessageBox MB_OK|MB_ICONSTOP "程序文件未能完整安装。请关闭正在运行的软件后重试。"
-    SetErrorLevel 1
+    SetErrorLevel 13
     Abort
   installed:
 SectionEnd
 
 Section "创建桌面快捷方式" DesktopSection
+  ${If} ${Silent}
+  ${AndIf} $IsUpgradeInstall == "1"
+  ${AndIf} $HadDesktopShortcut == "0"
+    Goto skip_desktop_shortcut
+  ${EndIf}
   CreateShortcut "$DESKTOP\${PRODUCT}.lnk" "$INSTDIR\FolderSeal.exe"
+  skip_desktop_shortcut:
 SectionEnd
 
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
@@ -187,8 +265,13 @@ Function un.onInit
   IfErrors invalid
   FileRead $0 $1
   FileClose $0
+  Call un.TrimMarkerLine
   StrCmp $1 "${PRODUCT_MARKER}" valid
   invalid:
+    ${If} ${Silent}
+      SetErrorLevel 14
+      Abort
+    ${EndIf}
     MessageBox MB_OK|MB_ICONSTOP "安装目录标记不匹配，已停止卸载。"
     Abort
   valid:
@@ -200,6 +283,7 @@ Section "Uninstall"
   Delete "$INSTDIR\FolderSeal.exe"
   IfErrors uninstall_failed
   Delete "$INSTDIR\使用说明.txt"
+  Delete "$INSTDIR\LICENSE"
   Delete "$DESKTOP\文件夹加密工具（EurekaGao）.lnk"
   Delete "$DESKTOP\${PRODUCT}.lnk"
   Delete "$SMPROGRAMS\EurekaGao\${PRODUCT}\${PRODUCT}.lnk"
@@ -216,8 +300,12 @@ Section "Uninstall"
   RMDir "$INSTDIR"
   Goto removed
   uninstall_failed:
+    ${If} ${Silent}
+      SetErrorLevel 15
+      Abort
+    ${EndIf}
     MessageBox MB_OK|MB_ICONSTOP "程序仍在运行或无法删除。请先关闭软件，再重新卸载。"
-    SetErrorLevel 1
+    SetErrorLevel 15
     Abort
   removed:
 SectionEnd

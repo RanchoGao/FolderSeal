@@ -1,3 +1,4 @@
+// Copyright (c) EurekaGao. Entry tests use generated fixtures only.
 using System;
 using System.IO;
 using System.Reflection;
@@ -11,7 +12,7 @@ class EntryTests {
  string test=Path.Combine(args[0],"entry-test-"+Guid.NewGuid().ToString("N")); Directory.CreateDirectory(test);
  try {
  string root=Path.Combine(test,"中文 空格资料");
- using(var v=new VaultSession(root,Path.Combine(test,"sessions"),false)){v.Create("123456");File.WriteAllText(Path.Combine(v.Work,"sample.txt"),"fixture");v.Lock();}
+ using(var v=new VaultSession(root,Path.Combine(test,"sessions"),false)){v.Create("12345678");File.WriteAllText(Path.Combine(v.Work,"sample.txt"),"fixture");v.Lock();}
  byte[] hash=Paths.Hash(Path.Combine(root,VaultSession.DataName));
  string entry=Task.Run(delegate { return FolderEntry.Create(root,false); }).GetAwaiter().GetResult();
  object shell=Activator.CreateInstance(Type.GetTypeFromProgID("WScript.Shell"));
@@ -39,24 +40,24 @@ class EntryTests {
      bool wrongPassword = false;
      try { v.RepairEntry("654321"); } catch (CryptographicException) { wrongPassword = true; }
      if (!wrongPassword || File.Exists(entry) || v.Open) throw new Exception("Invalid password repaired entry");
-     if (v.RepairEntry("123456") != entry || v.RepairEntry("123456") != entry || !Paths.Equal(hash, Paths.Hash(v.Data)))
+     if (v.RepairEntry("12345678") != entry || v.RepairEntry("12345678") != entry || !Paths.Equal(hash, Paths.Hash(v.Data)))
          throw new Exception("Repair failed to create or update entry without changing ciphertext");
      wrongPassword = false;
      try { v.HideEntry("654321"); } catch (CryptographicException) { wrongPassword = true; }
      if (!wrongPassword || !File.Exists(entry) || v.Open) throw new Exception("Invalid password hid entry");
-     v.HideEntry("123456");
+     v.HideEntry("12345678");
      if (File.Exists(entry) || (File.GetAttributes(root) & hidden) != hidden || !Paths.Equal(hash, Paths.Hash(v.Data)))
          throw new Exception("HideEntry failed to remove shortcut and keep vault hidden");
-     if (v.RepairEntry("123456") != entry || !File.Exists(entry))
+     if (v.RepairEntry("12345678") != entry || !File.Exists(entry))
          throw new Exception("RepairEntry failed to restore shortcut after HideEntry");
      wrongPassword = false;
      try { v.Unlock("654321"); } catch (CryptographicException) { wrongPassword = true; }
      if (!wrongPassword || v.Open || (v.Work != null && Directory.Exists(v.Work))) throw new Exception("Invalid password unlocked vault");
-     v.Unlock("123456");
+     v.Unlock("12345678");
      if (File.ReadAllText(Path.Combine(v.Work, "sample.txt")) != "fixture") throw new Exception("Content mismatch");
      v.Lock();
      if (v.Open || !File.Exists(entry)) throw new Exception("Locking removed the entry or left the vault unlocked");
-     v.Delete("123456");
+     v.Delete("12345678");
      FolderEntry.Remove(root);
      if (Directory.Exists(root) || File.Exists(entry)) throw new Exception("Authenticated deletion left the vault or entry");
  }

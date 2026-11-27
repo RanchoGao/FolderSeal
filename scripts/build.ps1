@@ -1,7 +1,10 @@
 ﻿# Copyright (c) 2026 EurekaGao. MIT License.
 [CmdletBinding()]
-param([switch]$Validate, [switch]$ValidateEntry, [switch]$ValidateAcl, [switch]$ValidateUi, [switch]$ValidateIcon, [switch]$ValidateInstance, [switch]$ValidateLibrary, [switch]$ValidateDiscovery, [switch]$ValidateUpdate, [switch]$ValidateShell)
+param([switch]$ValidateAll, [switch]$Validate, [switch]$ValidateEntry, [switch]$ValidateAcl, [switch]$ValidateUi, [switch]$ValidateIcon, [switch]$ValidateInstance, [switch]$ValidateLibrary, [switch]$ValidateDiscovery, [switch]$ValidateUpdate, [switch]$ValidateShell)
 $ErrorActionPreference = 'Stop'
+if ($ValidateAll) {
+    $Validate = $ValidateEntry = $ValidateUi = $ValidateIcon = $ValidateInstance = $ValidateLibrary = $ValidateDiscovery = $ValidateUpdate = $ValidateShell = $true
+}
 $taskRoot = Split-Path -Parent $PSScriptRoot
 $taskCompiler = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 if (-not (Test-Path -LiteralPath $taskCompiler)) {
@@ -16,6 +19,14 @@ $taskTestParent = Join-Path $taskRoot 'artifacts\test-work'
 New-Item -ItemType Directory -Path $taskOutput, $taskTestParent -Force | Out-Null
 $taskSource = Join-Path $taskRoot 'src\FolderSeal.cs'
 $taskManifest = Join-Path $taskRoot 'src\FolderSeal.manifest'
+if (Select-String -LiteralPath $taskSource -Pattern '\bMessageBox\.Show\s*\(' -Quiet) {
+    throw '静态门禁失败：src/FolderSeal.cs 中禁止重新引入 MessageBox.Show，请统一使用 AppDialog。'
+}
+$taskTokenScript = Join-Path $PSScriptRoot 'sync-design-tokens.ps1'
+if (Test-Path -LiteralPath $taskTokenScript -PathType Leaf) {
+    & $taskTokenScript -Check
+    if ($LASTEXITCODE -ne 0) { throw '设计系统 Token 漂移校验失败，请先运行 scripts/sync-design-tokens.ps1。' }
+}
 $taskVersion = [regex]::Match([IO.File]::ReadAllText((Join-Path $taskRoot 'installer\FolderSeal.nsi')), '!define VERSION "([^\"]+)"').Groups[1].Value
 if (-not $taskVersion) { throw 'Missing VERSION in installer definition.' }
 $taskVersionSource = Join-Path $taskOutput 'VersionInfo.cs'
@@ -33,7 +44,7 @@ using System.Reflection;
 $taskIcon = Join-Path $taskRoot 'assets\FolderSeal.ico'
 $taskBranding = @("/win32icon:$taskIcon", "/resource:$taskIcon,FolderSeal.AppIcon", $taskVersionSource)
 $taskReferences = @('/r:System.dll','/r:System.Core.dll','/r:System.Drawing.dll','/r:System.Windows.Forms.dll','/r:System.Security.dll','/r:System.IO.Compression.dll','/r:System.IO.Compression.FileSystem.dll','/r:System.Runtime.Serialization.dll')
-& $taskCompiler /nologo /optimize+ /target:winexe /platform:anycpu "/win32manifest:$taskManifest" "/out:$taskOutput\FolderSeal.exe" @taskReferences @taskBranding $taskSource
+& $taskCompiler /nologo /optimize+ /highentropyva+ /target:winexe /platform:anycpu "/win32manifest:$taskManifest" "/out:$taskOutput\FolderSeal.exe" @taskReferences @taskBranding $taskSource
 if ($LASTEXITCODE -ne 0) { throw '程序编译失败。' }
 & $taskCompiler /nologo /optimize+ /target:exe /main:FolderSeal.Tests "/out:$taskOutput\FolderSeal.Tests.exe" @taskReferences @taskBranding $taskSource (Join-Path $taskRoot 'tests\CoreTests.cs')
 if ($LASTEXITCODE -ne 0) { throw '核心验证程序编译失败。' }
