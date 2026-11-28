@@ -2,6 +2,12 @@
 
 版本号遵循语义化版本：不兼容的密文或命令行变更升主版本，新增功能升次版本，修复升修订号。文件名不带版本号，版本由 git tag `vX.Y.Z` 与 `releases/<版本>/` 表示。
 
+## 2.14.0 - 2026-11-28（预发布）
+
+- 强化锁定态防修改与防删除保护（R-050）：对加密目录本体、内部密文文件（`内容.egvault`、`上一版本.egvault`）以及快捷访问入口（`.lnk`），同时向普通用户、管理员（`Administrators`）与系统服务（`SYSTEM`）施加显式拒绝写入与拒绝删除（`Deny Write | Delete`，目录另含 `DeleteSubdirectoriesAndFiles`）规则，并收紧 `Administrators`（仅保留读取与权限管理位）与 `SYSTEM`（仅保留 `ReadAndExecute`）的允许规则；`.access.lock` 保持管理员读写以维持单会话独占锁。
+- 适配全部内部写入与属性修改事务：在新建锁文件（`Acquire`）、保存快照（`SaveSnapshot`）、改密事务（`ChangePassword`）及设置目录系统隐藏属性（`FolderEntry.Create`/`Hide`）前临时解除写删限制，并在结束或异常退出时通过 `finally` 自动恢复封锁；同步更新忘密手动清理说明（含 `/remove:d SYSTEM`）。
+- 538+ 项非管理员自动检查（核心 153 项含新增 20 项锁定态 ACL 规则构造单测、界面 130、原生图标 53、单实例 17、发现过滤 13、资料库 97、升级 39、右键与隐藏入口 36、快捷入口 PASS）全部通过；安装包与便携包已生成校验；管理员 ACL 集成测试（`-ValidateAcl`，已新增管理员防写入与防篡改入口断言）及安装/覆盖升级/卸载（`verify-installer.ps1`）待管理员环境验收。
+
 ## 2.13.1 - 2026-11-27（预发布）
 
 - 加固应用内自动更新安全链路：下载暂存目录迁至受保护的 `%ProgramData%\EurekaGao\FolderSeal\Updates`（管理员模式施加 `Restrict` ACL），强制 `SHA256SUMS.txt` fail-closed 校验；更新脚本改为 `$ErrorActionPreference = 'Stop'` + 写诊断日志、执行前二次核验 SHA-256、主进程退出 60s 限时等待及静默安装 180s 超时保护，并在退出前显式断言不存在未锁定会话。

@@ -44,7 +44,7 @@ namespace FolderSeal
             try
             {
                 if (args.Length > 1 && args[1] == "--acl") AclTest();
-                else { PasswordBoundary(); RoundTrip(); Tamper(); PathValidation(); FailureSafety(); CleanupRecovery(); WorkspaceVersionRecovery(); Concurrency(); DeleteAuthentication(); HardLinkTest(); ImportSourceCleanupTest(); DirtyCheckFastLockTest(); }
+                else { PasswordBoundary(); RoundTrip(); Tamper(); PathValidation(); FailureSafety(); CleanupRecovery(); WorkspaceVersionRecovery(); Concurrency(); DeleteAuthentication(); HardLinkTest(); ImportSourceCleanupTest(); DirtyCheckFastLockTest(); SealedAclRulesTest(); }
                 Console.WriteLine("SUCCESS " + checks + " checks");
                 if (report != null) File.WriteAllText(report, "SUCCESS " + checks + " checks\r\n" + DateTime.Now.ToString("s"), Encoding.UTF8);
                 passed = true; return 0;
@@ -529,6 +529,45 @@ namespace FolderSeal
         private static extern bool CreateRestrictedToken(IntPtr token, uint flags, uint disableCount, ref SidAndAttributes disable, uint deleteCount, IntPtr privileges, uint restrictCount, IntPtr restricted, out IntPtr result);
         [DllImport("kernel32.dll")] private static extern IntPtr GetCurrentProcess();
         [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr handle);
+        private static bool HasRule(FileSystemSecurity acl, SecurityIdentifier sid, AccessControlType type, FileSystemRights requiredRights)
+        {
+            return acl.GetAccessRules(true, false, typeof(SecurityIdentifier))
+                .OfType<FileSystemAccessRule>()
+                .Any(r => r.IdentityReference.Equals(sid) && r.AccessControlType == type && (r.FileSystemRights & requiredRights) == requiredRights);
+        }
+        private static void SealedAclRulesTest()
+        {
+            SecurityIdentifier admin = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+            SecurityIdentifier system = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
+            SecurityIdentifier user = WindowsIdentity.GetCurrent().User;
+
+            DirectorySecurity dirAcl = Permissions.BuildSealedDirectoryAcl();
+            Assert(dirAcl.AreAccessRulesProtected, "sealed directory disables ACL inheritance");
+            Assert(HasRule(dirAcl, user, AccessControlType.Deny, Permissions.SealedDirectoryDeny), "sealed directory denies write and delete for user");
+            Assert(HasRule(dirAcl, admin, AccessControlType.Deny, Permissions.SealedDirectoryDeny), "sealed directory denies write and delete for administrators");
+            Assert(HasRule(dirAcl, system, AccessControlType.Deny, Permissions.SealedDirectoryDeny), "sealed directory denies write and delete for SYSTEM");
+            Assert(HasRule(dirAcl, admin, AccessControlType.Allow, FileSystemRights.ChangePermissions | FileSystemRights.TakeOwnership | FileSystemRights.ReadAndExecute), "sealed directory preserves admin permission-management and read rights");
+            Assert(!HasRule(dirAcl, admin, AccessControlType.Allow, FileSystemRights.WriteData), "sealed directory does not grant write allow to administrators");
+            Assert(HasRule(dirAcl, system, AccessControlType.Allow, FileSystemRights.ReadAndExecute) && !HasRule(dirAcl, system, AccessControlType.Allow, FileSystemRights.WriteData), "sealed directory grants SYSTEM read-only allow");
+            Assert(!HasRule(dirAcl, user, AccessControlType.Allow, FileSystemRights.ReadAttributes), "sealed directory grants no allow rules to ordinary user");
+
+            FileSecurity fileAcl = Permissions.BuildSealedFileAcl();
+            Assert(fileAcl.AreAccessRulesProtected, "sealed ciphertext disables ACL inheritance");
+            Assert(HasRule(fileAcl, user, AccessControlType.Deny, Permissions.SealedFileDeny), "sealed ciphertext denies write and delete for user");
+            Assert(HasRule(fileAcl, admin, AccessControlType.Deny, Permissions.SealedFileDeny), "sealed ciphertext denies write and delete for administrators");
+            Assert(HasRule(fileAcl, system, AccessControlType.Deny, Permissions.SealedFileDeny), "sealed ciphertext denies write and delete for SYSTEM");
+            Assert(HasRule(fileAcl, admin, AccessControlType.Allow, FileSystemRights.ChangePermissions | FileSystemRights.TakeOwnership | FileSystemRights.ReadAndExecute), "sealed ciphertext preserves admin permission-management and read rights");
+            Assert(!HasRule(fileAcl, admin, AccessControlType.Allow, FileSystemRights.WriteData), "sealed ciphertext does not grant write allow to administrators");
+            Assert(HasRule(fileAcl, system, AccessControlType.Allow, FileSystemRights.ReadAndExecute) && !HasRule(fileAcl, system, AccessControlType.Allow, FileSystemRights.WriteData), "sealed ciphertext grants SYSTEM read-only allow");
+
+            FileSecurity entryAcl = Permissions.BuildProtectedEntryAcl();
+            Assert(entryAcl.AreAccessRulesProtected, "protected shortcut disables ACL inheritance");
+            Assert(HasRule(entryAcl, user, AccessControlType.Allow, FileSystemRights.ReadAndExecute), "protected shortcut allows user read-and-execute");
+            Assert(HasRule(entryAcl, user, AccessControlType.Deny, Permissions.SealedFileDeny), "protected shortcut denies write and delete for user");
+            Assert(HasRule(entryAcl, admin, AccessControlType.Deny, Permissions.SealedFileDeny), "protected shortcut denies write and delete for administrators");
+            Assert(HasRule(entryAcl, system, AccessControlType.Deny, Permissions.SealedFileDeny), "protected shortcut denies write and delete for SYSTEM");
+            Say("sealed ACL rules explicitly deny write and delete for user, administrators and SYSTEM while preserving authorized recovery rights");
+        }
         private static void AclTest()
         {
             if (!Native.IsAdmin()) throw new UnauthorizedAccessException("ACL integration tests require an elevated process.");
@@ -541,6 +580,9 @@ namespace FolderSeal
             Assert(Directory.GetAccessControl(root).GetAccessRules(true, false, typeof(SecurityIdentifier)).OfType<FileSystemAccessRule>().Any(x => x.AccessControlType == AccessControlType.Deny && (x.FileSystemRights & FileSystemRights.Delete) != 0), "sealed folder denies deletion explicitly");
             Fails(delegate { Directory.Delete(root, true); }, "elevated process cannot directly delete sealed folder");
             Fails(delegate { File.Delete(Path.Combine(root, "ciphertext.fixture")); }, "elevated process cannot directly delete sealed ciphertext");
+            Fails(delegate { File.WriteAllText(Path.Combine(root, "ciphertext.fixture"), "elevated tamper"); }, "elevated process cannot directly overwrite sealed ciphertext");
+            Fails(delegate { File.AppendAllText(Path.Combine(root, "ciphertext.fixture"), "append"); }, "elevated process cannot directly append sealed ciphertext");
+            Fails(delegate { File.WriteAllText(Path.Combine(root, "rogue.txt"), "injected"); }, "elevated process cannot directly create file in sealed folder");
             Fails(delegate { Directory.Move(root, Child("elevated-moved-root")); }, "elevated process cannot directly move sealed folder");
             string emptyRoot = Child("protected-empty"); Directory.CreateDirectory(emptyRoot); Permissions.Seal(emptyRoot);
             Assert(!Native.ParentAllowsDeleteChild(container), "ordinary parent has no DELETE_CHILD override");
@@ -602,6 +644,7 @@ namespace FolderSeal
                         Assert(File.ReadAllBytes(vault.Data).Length > 0, "rejected repair leaves the vault access rules unchanged");
                     string entry = vault.RepairEntry(Password);
                     Fails(delegate { File.Delete(entry); }, "elevated process cannot directly delete protected shortcut");
+                    Fails(delegate { File.WriteAllText(entry, "tampered shortcut"); }, "elevated process cannot directly overwrite protected shortcut");
                     Fails(delegate { File.Move(entry, Child("elevated-moved-entry.lnk")); }, "elevated process cannot directly move protected shortcut");
                     using (WindowsIdentity.Impersonate(restricted))
                     {

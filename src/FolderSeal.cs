@@ -772,6 +772,10 @@ namespace FolderSeal
         private static readonly SecurityIdentifier SystemSid = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
         private static readonly SecurityIdentifier User = WindowsIdentity.GetCurrent().User;
         private const FileSystemRights WorkspaceTraverse = FileSystemRights.Traverse | FileSystemRights.ReadAttributes | FileSystemRights.Synchronize;
+        internal const FileSystemRights SealedAdminAllow = FileSystemRights.ReadAndExecute | FileSystemRights.ReadPermissions | FileSystemRights.ChangePermissions | FileSystemRights.TakeOwnership;
+        internal const FileSystemRights SealedSystemAllow = FileSystemRights.ReadAndExecute;
+        internal const FileSystemRights SealedDirectoryDeny = FileSystemRights.Write | FileSystemRights.Delete | FileSystemRights.DeleteSubdirectoriesAndFiles;
+        internal const FileSystemRights SealedFileDeny = FileSystemRights.Write | FileSystemRights.Delete;
         public static void Set(string path, bool writableUser)
         {
             Apply(path, writableUser ? FileSystemRights.Modify : FileSystemRights.ReadAndExecute);
@@ -823,42 +827,65 @@ namespace FolderSeal
                 else Restrict(path);
             }
         }
+        private static FileSystemSecurity BuildSealedAccessControl(bool directory, FileSystemRights? userAllow, FileSystemRights denyRights)
+        {
+            InheritanceFlags inheritance = directory ? InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit : InheritanceFlags.None;
+            FileSystemSecurity acl = directory ? (FileSystemSecurity)new DirectorySecurity() : new FileSecurity();
+            acl.SetAccessRuleProtection(true, false);
+            acl.SetOwner(Native.IsAdmin() ? Admin : User);
+            acl.AddAccessRule(new FileSystemAccessRule(Admin, SealedAdminAllow, inheritance, PropagationFlags.None, AccessControlType.Allow));
+            acl.AddAccessRule(new FileSystemAccessRule(SystemSid, SealedSystemAllow, inheritance, PropagationFlags.None, AccessControlType.Allow));
+            if (userAllow.HasValue)
+                acl.AddAccessRule(new FileSystemAccessRule(User, userAllow.Value, InheritanceFlags.None, PropagationFlags.None, AccessControlType.Allow));
+            acl.AddAccessRule(new FileSystemAccessRule(User, denyRights, InheritanceFlags.None, PropagationFlags.None, AccessControlType.Deny));
+            acl.AddAccessRule(new FileSystemAccessRule(Admin, denyRights, InheritanceFlags.None, PropagationFlags.None, AccessControlType.Deny));
+            acl.AddAccessRule(new FileSystemAccessRule(SystemSid, denyRights, InheritanceFlags.None, PropagationFlags.None, AccessControlType.Deny));
+            return acl;
+        }
+        internal static DirectorySecurity BuildSealedDirectoryAcl()
+        {
+            return (DirectorySecurity)BuildSealedAccessControl(true, null, SealedDirectoryDeny);
+        }
+        internal static FileSecurity BuildSealedFileAcl()
+        {
+            return (FileSecurity)BuildSealedAccessControl(false, null, SealedFileDeny);
+        }
+        internal static FileSecurity BuildProtectedEntryAcl()
+        {
+            return (FileSecurity)BuildSealedAccessControl(false, FileSystemRights.ReadAndExecute, SealedFileDeny);
+        }
         public static void Seal(string root)
         {
-            DenyDeletion(root);
-            foreach (string file in Directory.GetFiles(root)) RestrictNoDelete(file);
+            SealDirectory(root);
+            foreach (string file in Directory.GetFiles(root))
+            {
+                if (String.Equals(Path.GetFileName(file), VaultSession.GateName, StringComparison.OrdinalIgnoreCase))
+                    Restrict(file);
+                else
+                    SealFile(file);
+            }
         }
-        // An explicit deny on both User and Administrators stops accidental delete, rename and move even when elevated or when the parent allows removal.
-        private static void DenyDeletion(string path)
+        // Explicitly denies write and delete for User, Administrators, and SYSTEM while preserving Administrators permission-management rights for authorized vault operations.
+        private static void SealDirectory(string path)
         {
             if (!Native.IsAdmin()) throw new UnauthorizedAccessException("锁定目录的保护需要管理员权限。");
             Paths.NoLinks(path);
-            DirectorySecurity acl = (DirectorySecurity)BuildAccessControl(true, null, true);
-            FileSystemRights deny = FileSystemRights.Delete | FileSystemRights.DeleteSubdirectoriesAndFiles;
-            acl.AddAccessRule(new FileSystemAccessRule(User, deny, InheritanceFlags.None, PropagationFlags.None, AccessControlType.Deny));
-            acl.AddAccessRule(new FileSystemAccessRule(Admin, deny, InheritanceFlags.None, PropagationFlags.None, AccessControlType.Deny));
-            Directory.SetAccessControl(path, acl);
+            Directory.SetAccessControl(path, BuildSealedDirectoryAcl());
         }
-        private static void RestrictNoDelete(string path)
+        private static void SealFile(string path)
         {
             if (!Native.IsAdmin()) throw new UnauthorizedAccessException("锁定目录的保护需要管理员权限。");
             Paths.NoLinks(path);
-            FileSecurity acl = (FileSecurity)BuildAccessControl(false, null, true);
-            acl.AddAccessRule(new FileSystemAccessRule(User, FileSystemRights.Delete, InheritanceFlags.None, PropagationFlags.None, AccessControlType.Deny));
-            acl.AddAccessRule(new FileSystemAccessRule(Admin, FileSystemRights.Delete, InheritanceFlags.None, PropagationFlags.None, AccessControlType.Deny));
-            File.SetAccessControl(path, acl);
+            File.SetAccessControl(path, BuildSealedFileAcl());
         }
-        // Allows Explorer to render and open the branded shortcut while blocking ordinary and accidental elevated deletion/renaming.
+        // Allows Explorer to render and open the branded shortcut while blocking ordinary, elevated, and SYSTEM writes or deletion/renaming.
         internal static void ProtectEntry(string path)
         {
             if (!Native.IsAdmin()) throw new UnauthorizedAccessException("快捷入口保护需要管理员权限。");
             Paths.NoLinks(path);
-            FileSecurity acl = (FileSecurity)BuildAccessControl(false, FileSystemRights.ReadAndExecute, false);
-            acl.AddAccessRule(new FileSystemAccessRule(User, FileSystemRights.Delete, InheritanceFlags.None, PropagationFlags.None, AccessControlType.Deny));
-            acl.AddAccessRule(new FileSystemAccessRule(Admin, FileSystemRights.Delete, InheritanceFlags.None, PropagationFlags.None, AccessControlType.Deny));
-            File.SetAccessControl(path, acl);
+            File.SetAccessControl(path, BuildProtectedEntryAcl());
         }
-        // Temporarily lifts the explicit deny-delete rules while keeping ordinary user access restricted.
+        // Temporarily lifts the explicit deny-write and deny-delete rules while keeping ordinary user access restricted.
         public static void AllowDelete(string path)
         {
             if (!Native.IsAdmin()) throw new UnauthorizedAccessException("解除受保护项目的删除限制需要管理员权限。");
@@ -1579,9 +1606,18 @@ namespace FolderSeal
                 string gatePath = Path.Combine(Root, GateName);
                 if (!File.Exists(gatePath))
                 {
-                    using (FileStream marker = new FileStream(gatePath, FileMode.CreateNew, FileAccess.Write, FileShare.None)) marker.WriteByte(1);
+                    if (protect) Permissions.AllowDelete(Root);
+                    try
+                    {
+                        using (FileStream marker = new FileStream(gatePath, FileMode.CreateNew, FileAccess.Write, FileShare.None)) marker.WriteByte(1);
+                        if (protect && protectGate) Permissions.Restrict(gatePath);
+                    }
+                    finally
+                    {
+                        if (protect && Directory.Exists(Root)) { try { Permissions.Seal(Root); } catch (Exception) { } }
+                    }
                 }
-                if (protect && protectGate) Permissions.Restrict(gatePath);
+                else if (protect && protectGate) Permissions.Restrict(gatePath);
                 gate = new FileStream(gatePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
             }
             catch (IOException error)
@@ -1748,12 +1784,12 @@ namespace FolderSeal
             string verify = Path.Combine(SessionRoot, "验证临时.zip");
             try
             {
+                if (protect) Permissions.AllowDelete(Root);
                 List<EntryStamp> stamps = ArchiveCrypto.Encrypt(Work, stage, header, keys);
                 ArchiveCrypto.DecryptZip(stage, verify, Header.Read(stage), keys);
                 ArchiveCrypto.Verify(verify, stamps);
                 ArchiveCrypto.CheckWorkspace(Work, stamps);
                 File.Delete(verify);
-                if (protect) Permissions.AllowDelete(Root);
                 if (File.Exists(Data))
                 {
                     string backup = Path.Combine(Root, BackupName);
@@ -2183,10 +2219,11 @@ namespace FolderSeal
                         using (KeySet k = new KeySet(oldPassword, h.Salt, h.Iterations)) ArchiveCrypto.Authenticate(file, k);
                         entries.Add(new RekeyEntry { Name = name, Before = Paths.Hash(file) });
                     }
+                    if (protect) Permissions.AllowDelete(Root);
                     foreach (RekeyEntry e in entries)
                     {
                         if (File.Exists(e.Old(Root))) throw new IOException("发现无事务记录的原快照副本，请保留目录并检查，未覆盖数据。");
-                        if (File.Exists(e.Stage(Root))) { if (protect) Permissions.AllowDelete(Root); File.Delete(e.Stage(Root)); }
+                        if (File.Exists(e.Stage(Root))) File.Delete(e.Stage(Root));
                         Rewrap(Path.Combine(Root, e.Name), e.Stage(Root), oldPassword, newPassword);
                         e.After = Paths.Hash(e.Stage(Root));
                         if (checkpoint != null) checkpoint("staged");
@@ -3911,7 +3948,7 @@ namespace FolderSeal
                     File.Move(stage, entry);
                     if (protect) Permissions.ProtectEntry(entry);
                 }
-                File.SetAttributes(root, File.GetAttributes(root) | FileAttributes.Hidden | FileAttributes.System);
+                SetRootHiddenAttributes(root, protect);
                 NotifyShell(0x00000800, root); // SHCNE_ATTRIBUTES
                 NotifyShell(replace ? 0x00002000u : 0x00000002u, entry); // SHCNE_UPDATEITEM or SHCNE_CREATE
                 return entry;
@@ -3946,8 +3983,15 @@ namespace FolderSeal
             root = Paths.Full(root); Paths.NoLinks(root);
             Header.Read(Path.Combine(root, VaultSession.DataName));
             Remove(root);
-            File.SetAttributes(root, File.GetAttributes(root) | FileAttributes.Hidden | FileAttributes.System);
+            SetRootHiddenAttributes(root, Native.IsAdmin());
             NotifyShell(0x00000800, root); // SHCNE_ATTRIBUTES
+        }
+        private static void SetRootHiddenAttributes(string root, bool protect)
+        {
+            bool lifted = protect && Native.IsAdmin();
+            if (lifted) Permissions.AllowDelete(root);
+            try { File.SetAttributes(root, File.GetAttributes(root) | FileAttributes.Hidden | FileAttributes.System); }
+            finally { if (lifted && Directory.Exists(root)) { try { Permissions.Seal(root); } catch (Exception) { } } }
         }
         public static void Remove(string root)
         {
