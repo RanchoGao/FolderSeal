@@ -1,5 +1,8 @@
 ﻿# 密封夹（FolderSeal）
 
+[![CI](https://github.com/RanchoGao/FolderSeal/actions/workflows/ci.yml/badge.svg)](https://github.com/RanchoGao/FolderSeal/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
 普通启动直接进入首页，不弹密码框、不展示列表或自动扫描。每次进入“我的加密文件夹”都需要验证密码，在同一次列表操作里选中资料打开时无需再输一次。关闭列表、完成操作后授权结束。保存并锁定后再解锁，需要重新验证。
 
 密封夹（FolderSeal）— 你的文件，只有你能打开。
@@ -153,6 +156,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build.ps1
 - 大文件夹每次锁定重新生成整个快照，耗时与内容大小有关。
 - 本项目尚未经过独立安全审计，不宣称绝对安全。
 
+面向安全审计者与开发者的完整密码学格式、密钥生命周期、故障安全状态机与 NTFS ACL 权限矩阵见 [安全架构白皮书](docs/安全架构白皮书.md)；隐私与联网披露见 [PRIVACY.md](PRIVACY.md)；公开自动构建、SLSA 溯源校验与代码签名状态见 [CODE_SIGNING.md](CODE_SIGNING.md)。
+
 ## 构建与验证
 
 运行核心、图标入口和界面验证：
@@ -237,14 +242,17 @@ artifacts/dist/SHA256SUMS.txt
 ## 仓库结构
 
 ```text
+.github/      GitHub Actions 公开自动验证（ci.yml）与发布流水线（release.yml）
 assets/       品牌原图与多尺寸 Windows 图标
 src/          程序源码和管理员权限 manifest
 tests/        核心、权限、图标入口及界面验证源码
 scripts/      相对路径构建和安装包脚本
 installer/    NSIS 安装定义
-docs/         使用说明、安装说明、安全边界、发布流程
+docs/         使用说明、安装说明、安全边界、安全架构白皮书、发布流程
 docs/历史/    过期文档
 docs/品牌设计/ 图标与品牌命名资料
+PRIVACY.md    隐私声明（中英双语）
+CODE_SIGNING.md 代码签名与发布验证政策（中英双语）
 artifacts/    本地编译、测试产物（Git 忽略）
 releases/     本地待发布及已发布附件，按版本归档（Git 忽略）
 tools/        NSIS 3.13 便携编译器（Git 忽略）

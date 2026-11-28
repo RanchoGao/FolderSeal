@@ -1,6 +1,6 @@
 ﻿# Copyright (c) 2026 EurekaGao. MIT License.
 [CmdletBinding()]
-param([string]$NsisCompiler, [switch]$ValidateAll)
+param([string]$NsisCompiler, [switch]$ValidateAll, [switch]$SkipBuild)
 $ErrorActionPreference = 'Stop'
 $taskRoot = Split-Path -Parent $PSScriptRoot
 if (-not $NsisCompiler) {
@@ -19,11 +19,18 @@ $NsisCompiler = (Resolve-Path -LiteralPath $NsisCompiler).Path
 $taskInstallerScript = Join-Path $taskRoot 'installer\FolderSeal.nsi'
 $taskVersion = [regex]::Match((Get-Content -LiteralPath $taskInstallerScript -Raw), '!define VERSION "([^"]+)"').Groups[1].Value
 if (-not $taskVersion) { throw '无法从 installer/FolderSeal.nsi 读取 VERSION。' }
-# Always compile from this checkout before packaging; do not package a stale EXE.
-if ($ValidateAll) {
-    & (Join-Path $PSScriptRoot 'build.ps1') -ValidateAll
+if ($SkipBuild) {
+    $taskBinary = Join-Path $taskRoot 'artifacts\bin\FolderSeal.exe'
+    if (-not (Test-Path -LiteralPath $taskBinary -PathType Leaf)) {
+        throw '使用 -SkipBuild 时未找到 artifacts\bin\FolderSeal.exe，请先运行 scripts/build.ps1。'
+    }
 } else {
-    & (Join-Path $PSScriptRoot 'build.ps1')
+    # Always compile from this checkout before packaging; do not package a stale EXE.
+    if ($ValidateAll) {
+        & (Join-Path $PSScriptRoot 'build.ps1') -ValidateAll
+    } else {
+        & (Join-Path $PSScriptRoot 'build.ps1')
+    }
 }
 $taskDist = Join-Path $taskRoot 'artifacts\dist'
 New-Item -ItemType Directory -Path $taskDist -Force | Out-Null

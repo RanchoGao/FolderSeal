@@ -1,12 +1,19 @@
 ﻿# Copyright (c) 2026 EurekaGao. Build a portable package from this checkout.
 [CmdletBinding()]
-param()
+param([switch]$SkipBuild)
 $ErrorActionPreference = 'Stop'
 $taskRoot = Split-Path -Parent $PSScriptRoot
 $taskDefinition = Join-Path $taskRoot 'installer\FolderSeal.nsi'
 $taskVersion = [regex]::Match((Get-Content -LiteralPath $taskDefinition -Raw -Encoding UTF8), '!define VERSION "([^"]+)"').Groups[1].Value
 if (-not $taskVersion) { throw '无法读取版本号。' }
-& (Join-Path $PSScriptRoot 'build.ps1')
+if ($SkipBuild) {
+    $taskBinary = Join-Path $taskRoot 'artifacts\bin\FolderSeal.exe'
+    if (-not (Test-Path -LiteralPath $taskBinary -PathType Leaf)) {
+        throw '使用 -SkipBuild 时未找到 artifacts\bin\FolderSeal.exe，请先运行 scripts/build.ps1。'
+    }
+} else {
+    & (Join-Path $PSScriptRoot 'build.ps1')
+}
 $taskDist = Join-Path $taskRoot 'artifacts\dist'
 $taskStageParent = Join-Path $taskRoot ('artifacts\portable-' + [guid]::NewGuid().ToString('N'))
 $taskStage = Join-Path $taskStageParent 'FolderSeal'

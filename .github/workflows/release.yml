@@ -1,0 +1,191 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Optional release tag (e.g. v2.14.0). Leave empty for a dry-run build without creating a GitHub Release.'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  build-and-release:
+    name: Build, Verify & Package Release
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve and verify version metadata
+        id: meta
+        shell: pwsh
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $nsi = Get-Content -LiteralPath 'installer\FolderSeal.nsi' -Raw -Encoding UTF8
+          $version = [regex]::Match($nsi, '!define VERSION "([^"]+)"').Groups[1].Value
+          if (-not $version) { throw 'Cannot read VERSION from installer/FolderSeal.nsi.' }
+
+          $tag = ''
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $tag = $env:GITHUB_REF_NAME
+          } elseif ($env:INPUT_TAG -and $env:INPUT_TAG.Trim()) {
+            $tag = $env:INPUT_TAG.Trim()
+          }
+
+          if ($tag) {
+            $expectedTag = "v$version"
+            if ($tag -ne $expectedTag) {
+              throw "Tag '$tag' does not match installer/FolderSeal.nsi VERSION '$version' (expected '$expectedTag')."
+            }
+          }
+
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "Resolved version=$version, tag=$tag"
+
+      - name: Install NSIS
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Get-Command makensis.exe -ErrorAction SilentlyContinue)) {
+            choco install nsis --no-progress -y
+          }
+          $nsisDir = 'C:\Program Files (x86)\NSIS'
+          if (Test-Path -LiteralPath (Join-Path $nsisDir 'makensis.exe')) {
+            $nsisDir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+            $env:PATH = "$nsisDir;$env:PATH"
+          }
+          $nsisVersion = & makensis.exe /VERSION
+          Write-Host "Using NSIS $nsisVersion"
+
+      - name: Build and run full validation suite (including NTFS ACL tests)
+        shell: pwsh
+        run: |
+          .\scripts\build.ps1 -ValidateAll -ValidateAcl
+
+      # Stage 1 SignPath code signing: sign FolderSeal.exe before packaging (enabled once SIGNPATH_ENABLED == 'true').
+      - name: Upload unsigned FolderSeal.exe for SignPath
+        id: upload-unsigned-exe
+        if: ${{ vars.SIGNPATH_ENABLED == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-folderseal-exe
+          path: artifacts/bin/FolderSeal.exe
+          retention-days: 1
+
+      - name: Sign FolderSeal.exe via SignPath
+        if: ${{ vars.SIGNPATH_ENABLED == 'true' }}
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORG_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'folderseal' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG || 'release-signing' }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_EXE_ARTIFACT_CONFIG || 'folderseal-exe' }}
+          github-artifact-id: ${{ steps.upload-unsigned-exe.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: artifacts/signed-exe
+
+      - name: Replace with signed FolderSeal.exe and verify signature
+        if: ${{ vars.SIGNPATH_ENABLED == 'true' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $signed = Get-ChildItem -Path 'artifacts\signed-exe' -Filter 'FolderSeal.exe' -Recurse | Select-Object -First 1
+          if (-not $signed) { throw 'Signed FolderSeal.exe not found in artifacts/signed-exe.' }
+          Copy-Item -LiteralPath $signed.FullName -Destination 'artifacts\bin\FolderSeal.exe' -Force
+          $sig = Get-AuthenticodeSignature -FilePath 'artifacts\bin\FolderSeal.exe'
+          if ($sig.Status -ne 'Valid') { throw "Signed FolderSeal.exe signature invalid: $($sig.Status)" }
+          Write-Host "Verified FolderSeal.exe signature: $($sig.SignerCertificate.Subject)"
+
+      - name: Package portable archive and installer
+        shell: pwsh
+        run: |
+          .\scripts\package-portable.ps1 -SkipBuild
+          .\scripts\package.ps1 -SkipBuild
+
+      # Stage 2 SignPath code signing: sign Setup.exe and recompute SHA256SUMS.txt.
+      - name: Upload unsigned Setup.exe for SignPath
+        id: upload-unsigned-setup
+        if: ${{ vars.SIGNPATH_ENABLED == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-folderseal-setup
+          path: artifacts/dist/FolderSeal-${{ steps.meta.outputs.version }}-Setup.exe
+          retention-days: 1
+
+      - name: Sign Setup.exe via SignPath
+        if: ${{ vars.SIGNPATH_ENABLED == 'true' }}
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORG_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'folderseal' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG || 'release-signing' }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_SETUP_ARTIFACT_CONFIG || 'folderseal-setup' }}
+          github-artifact-id: ${{ steps.upload-unsigned-setup.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: artifacts/signed-setup
+
+      - name: Replace with signed Setup.exe, verify signature, and recompute SHA256SUMS.txt
+        if: ${{ vars.SIGNPATH_ENABLED == 'true' }}
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = $env:RELEASE_VERSION
+          $setupName = "FolderSeal-$version-Setup.exe"
+          $setupPath = Join-Path 'artifacts\dist' $setupName
+          $signed = Get-ChildItem -Path 'artifacts\signed-setup' -Filter $setupName -Recurse | Select-Object -First 1
+          if (-not $signed) { throw "Signed $setupName not found in artifacts/signed-setup." }
+          Copy-Item -LiteralPath $signed.FullName -Destination $setupPath -Force
+          $sig = Get-AuthenticodeSignature -FilePath $setupPath
+          if ($sig.Status -ne 'Valid') { throw "Signed $setupName signature invalid: $($sig.Status)" }
+          $hash = Get-FileHash -LiteralPath $setupPath -Algorithm SHA256
+          "$($hash.Hash)  $setupName" | Set-Content -LiteralPath 'artifacts\dist\SHA256SUMS.txt' -Encoding ascii
+          Write-Host "Verified $setupName signature ($($sig.SignerCertificate.Subject)) and updated SHA256SUMS.txt."
+
+      - name: Generate SLSA Build Provenance Attestations
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            artifacts/dist/FolderSeal-${{ steps.meta.outputs.version }}-Setup.exe
+            artifacts/dist/FolderSeal-${{ steps.meta.outputs.version }}-Portable.zip
+
+      - name: Upload release artifacts for workflow inspection
+        uses: actions/upload-artifact@v4
+        with:
+          name: FolderSeal-${{ steps.meta.outputs.version }}-dist
+          path: |
+            artifacts/dist/FolderSeal-${{ steps.meta.outputs.version }}-Setup.exe
+            artifacts/dist/FolderSeal-${{ steps.meta.outputs.version }}-Portable.zip
+            artifacts/dist/SHA256SUMS.txt
+            artifacts/dist/PORTABLE-SHA256SUMS.txt
+          retention-days: 14
+
+      - name: Create Draft GitHub Release
+        if: ${{ steps.meta.outputs.tag != '' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: 密封夹（FolderSeal）${{ steps.meta.outputs.tag }}
+          draft: true
+          generate_release_notes: true
+          files: |
+            artifacts/dist/FolderSeal-${{ steps.meta.outputs.version }}-Setup.exe
+            artifacts/dist/FolderSeal-${{ steps.meta.outputs.version }}-Portable.zip
+            artifacts/dist/SHA256SUMS.txt
+            artifacts/dist/PORTABLE-SHA256SUMS.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
