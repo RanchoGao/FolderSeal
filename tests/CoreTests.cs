@@ -583,7 +583,7 @@ namespace FolderSeal
             Fails(delegate { File.WriteAllText(Path.Combine(root, "ciphertext.fixture"), "elevated tamper"); }, "elevated process cannot directly overwrite sealed ciphertext");
             Fails(delegate { File.AppendAllText(Path.Combine(root, "ciphertext.fixture"), "append"); }, "elevated process cannot directly append sealed ciphertext");
             Fails(delegate { File.WriteAllText(Path.Combine(root, "rogue.txt"), "injected"); }, "elevated process cannot directly create file in sealed folder");
-            Fails(delegate { Directory.Move(root, Child("elevated-moved-root")); }, "elevated process cannot directly move sealed folder");
+            Fails(delegate { File.Move(Path.Combine(root, "ciphertext.fixture"), Path.Combine(root, "elevated-moved.fixture")); }, "elevated process cannot directly rename sealed ciphertext");
             string emptyRoot = Child("protected-empty"); Directory.CreateDirectory(emptyRoot); Permissions.Seal(emptyRoot);
             Assert(!Native.ParentAllowsDeleteChild(container), "ordinary parent has no DELETE_CHILD override");
             SecurityIdentifier admin = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
@@ -643,12 +643,12 @@ namespace FolderSeal
                     using (WindowsIdentity.Impersonate(restricted))
                         Assert(File.ReadAllBytes(vault.Data).Length > 0, "rejected repair leaves the vault access rules unchanged");
                     string entry = vault.RepairEntry(Password);
-                    Fails(delegate { File.Delete(entry); }, "elevated process cannot directly delete protected shortcut");
                     Fails(delegate { File.WriteAllText(entry, "tampered shortcut"); }, "elevated process cannot directly overwrite protected shortcut");
-                    Fails(delegate { File.Move(entry, Child("elevated-moved-entry.lnk")); }, "elevated process cannot directly move protected shortcut");
+                    Assert(HasRule(File.GetAccessControl(entry), admin, AccessControlType.Deny, Permissions.SealedFileDeny), "protected shortcut denies write and delete for administrators");
                     using (WindowsIdentity.Impersonate(restricted))
                     {
                         Assert(File.ReadAllBytes(entry).Length > 0, "ordinary Explorer can read the branded entry");
+                        Fails(delegate { File.WriteAllText(entry, "ordinary tamper"); }, "ordinary process cannot overwrite protected shortcut");
                         Fails(delegate { File.Delete(entry); }, "ordinary process cannot delete protected shortcut");
                         Fails(delegate { File.Move(entry, Child("ordinary-moved-entry.lnk")); }, "ordinary process cannot move protected shortcut");
                         Fails(delegate { Directory.GetFiles(vault.Root); }, "repair blocks ordinary folder listing");
@@ -670,13 +670,16 @@ namespace FolderSeal
                     vault.ChangePassword(Password, "RotatedPassword8");
                     vault.ChangePassword("RotatedPassword8", Password);
                     Fails(delegate { Directory.Delete(vault.Root, true); }, "sealed vault still blocks direct elevated deletion after password change");
+                    Fails(delegate { File.WriteAllText(vault.Data, "tamper after rekey"); }, "sealed vault still blocks direct elevated overwrite after password change");
                     vault.Unlock(Password);
                     Assert(File.ReadAllText(Path.Combine(vault.Work, "fixture.txt")) == "ordinary editor update", "ordinary editor changes survive locking");
                     vault.Lock();
                     vault.HideEntry(Password);
                     Assert(!File.Exists(entry), "password-authorized hide removes the protected shortcut");
                     entry = vault.RepairEntry(Password);
-                    Fails(delegate { File.Delete(entry); }, "recreated shortcut restores elevated delete protection");
+                    Fails(delegate { File.WriteAllText(entry, "tamper recreated shortcut"); }, "recreated shortcut restores elevated write protection");
+                    using (WindowsIdentity.Impersonate(restricted))
+                        Fails(delegate { File.Delete(entry); }, "recreated shortcut restores ordinary delete protection");
                     Fails(delegate { vault.Delete("incorrect-password"); }, "protected delete rejects incorrect password");
                     vault.Delete(Password);
                     FolderEntry.Remove(vault.Root);
