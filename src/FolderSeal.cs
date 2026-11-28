@@ -3903,6 +3903,32 @@ namespace FolderSeal
     internal static class FolderEntry
     {
         private const string Description = "输入密码打开加密文件夹；使用结束后请保存并锁定。";
+        private static readonly Guid ShellLinkClsid = new Guid("00021401-0000-0000-C000-000000000046");
+
+        [ComImport]
+        [Guid("000214F9-0000-0000-C000-000000000046")]
+        [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IShellLinkW
+        {
+            void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszFile, int cchMaxPath, IntPtr pfd, int fFlags);
+            void GetIDList(out IntPtr ppidl);
+            void SetIDList(IntPtr pidl);
+            void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszName, int cchMaxName);
+            void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string pszName);
+            void GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszDir, int cchMaxPath);
+            void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string pszDir);
+            void GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszArgs, int cchMaxPath);
+            void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string pszArgs);
+            void GetHotkey(out short pwHotkey);
+            void SetHotkey(short wHotkey);
+            void GetShowCmd(out int piShowCmd);
+            void SetShowCmd(int iShowCmd);
+            void GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszIconPath, int cchIconPath, out int piIcon);
+            void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string pszIconPath, int iIcon);
+            void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string pszPathRel, int dwReserved);
+            void Resolve(IntPtr hwnd, int fFlags);
+            void SetPath([MarshalAs(UnmanagedType.LPWStr)] string pszFile);
+        }
 
         public static string Create(string root, bool protect)
         {
@@ -3912,28 +3938,20 @@ namespace FolderSeal
             Paths.NoLinks(entry);
             string arguments = Arguments(root);
             string stage = Path.Combine(Path.GetDirectoryName(entry), ".folderseal-" + Guid.NewGuid().ToString("N") + ".lnk");
-            object shell = Activator.CreateInstance(Type.GetTypeFromProgID("WScript.Shell"));
-            object link = null;
             try
             {
                 bool replace = File.Exists(entry);
-                if (Directory.Exists(entry) || (replace && !Matches(shell, entry, arguments)))
+                if (Directory.Exists(entry) || (replace && !Matches(entry, arguments)))
                     throw new IOException("存在其他同名项目，未覆盖：" + entry);
-                link = ReadLink(shell, stage);
-                Set(link, "TargetPath", Application.ExecutablePath);
-                Set(link, "Arguments", arguments);
-                Set(link, "WorkingDirectory", Path.GetDirectoryName(Application.ExecutablePath));
-                Set(link, "IconLocation", Application.ExecutablePath + ",0");
-                Set(link, "Description", Description);
-                link.GetType().InvokeMember("Save", System.Reflection.BindingFlags.InvokeMethod, null, link, null);
-                if (!Matches(shell, stage, arguments)) throw new IOException("入口创建失败。");
+                WriteShortcut(stage, Application.ExecutablePath, arguments, Path.GetDirectoryName(Application.ExecutablePath), Application.ExecutablePath, 0, Description);
+                if (!Matches(stage, arguments)) throw new IOException("入口创建失败。");
                 Paths.NoLinks(stage);
                 Native.RejectHardLink(stage);
                 if (protect) Permissions.Set(stage, false);
                 if (replace)
                 {
                     Paths.NoLinks(entry);
-                    if (!Matches(shell, entry, arguments)) throw new IOException("同名入口在创建期间发生变化，未覆盖。");
+                    if (!Matches(entry, arguments)) throw new IOException("同名入口在创建期间发生变化，未覆盖。");
                     if (protect) Permissions.AllowDelete(entry);
                     try { File.Replace(stage, entry, null, false); }
                     catch
@@ -3955,8 +3973,6 @@ namespace FolderSeal
             }
             finally
             {
-                if (link != null) Marshal.FinalReleaseComObject(link);
-                Marshal.FinalReleaseComObject(shell);
                 if (File.Exists(stage)) File.Delete(stage);
             }
         }
@@ -3969,12 +3985,7 @@ namespace FolderSeal
                 string entry = root + ".lnk";
                 if (!File.Exists(entry)) return;
                 Paths.NoLinks(entry);
-                object shell = Activator.CreateInstance(Type.GetTypeFromProgID("WScript.Shell"));
-                try
-                {
-                    if (Matches(shell, entry, Arguments(root))) Permissions.ProtectEntry(entry);
-                }
-                finally { Marshal.FinalReleaseComObject(shell); }
+                if (Matches(entry, Arguments(root))) Permissions.ProtectEntry(entry);
             }
             catch (Exception) { }
         }
@@ -3999,45 +4010,65 @@ namespace FolderSeal
             string entry = root + ".lnk";
             Paths.NoLinks(entry);
             if (!File.Exists(entry)) return;
-            object shell = Activator.CreateInstance(Type.GetTypeFromProgID("WScript.Shell"));
-            try
-            {
-                if (!Matches(shell, entry, Arguments(root))) return;
-                if (Native.IsAdmin()) Permissions.AllowDelete(entry);
-                File.Delete(entry);
-                NotifyShell(0x00000004, entry); // SHCNE_DELETE
-            }
-            finally { Marshal.FinalReleaseComObject(shell); }
+            if (!Matches(entry, Arguments(root))) return;
+            if (Native.IsAdmin()) Permissions.AllowDelete(entry);
+            File.Delete(entry);
+            NotifyShell(0x00000004, entry); // SHCNE_DELETE
         }
         private static string Arguments(string root) { return "--open-vault \"" + root + "\""; }
-        private static object ReadLink(object shell, string path)
+        private static void WriteShortcut(string path, string target, string arguments, string workingDirectory, string iconPath, int iconIndex, string description)
         {
-            return shell.GetType().InvokeMember("CreateShortcut", System.Reflection.BindingFlags.InvokeMethod, null, shell, new object[] { path });
-        }
-        private static bool Matches(object shell, string path, string arguments)
-        {
-            if (!File.Exists(path)) return false;
-            object link = ReadLink(shell, path);
+            object com = Activator.CreateInstance(Type.GetTypeFromCLSID(ShellLinkClsid));
             try
             {
-                string target = Get(link, "TargetPath");
-                return (String.Equals(target, Application.ExecutablePath, StringComparison.OrdinalIgnoreCase) ||
-                    String.Equals(Path.GetFileName(target), "FolderSeal.exe", StringComparison.OrdinalIgnoreCase)) &&
-                    Get(link, "Arguments") == arguments && Get(link, "Description") == Description;
+                IShellLinkW link = (IShellLinkW)com;
+                link.SetPath(target);
+                link.SetArguments(arguments);
+                link.SetWorkingDirectory(workingDirectory);
+                link.SetIconLocation(iconPath, iconIndex);
+                link.SetDescription(description);
+                ((System.Runtime.InteropServices.ComTypes.IPersistFile)com).Save(path, true);
             }
-            finally { Marshal.FinalReleaseComObject(link); }
+            finally { Marshal.FinalReleaseComObject(com); }
         }
-        private static string Get(object target, string property)
+        internal static bool TryReadShortcut(string path, out string target, out string arguments, out string icon, out string description)
         {
-            return (string)target.GetType().InvokeMember(property, System.Reflection.BindingFlags.GetProperty, null, target, null);
+            target = arguments = icon = description = null;
+            if (!File.Exists(path)) return false;
+            object com = Activator.CreateInstance(Type.GetTypeFromCLSID(ShellLinkClsid));
+            try
+            {
+                ((System.Runtime.InteropServices.ComTypes.IPersistFile)com).Load(path, 0);
+                IShellLinkW link = (IShellLinkW)com;
+                StringBuilder targetBuf = new StringBuilder(1024);
+                StringBuilder argsBuf = new StringBuilder(4096);
+                StringBuilder iconBuf = new StringBuilder(1024);
+                StringBuilder descBuf = new StringBuilder(1024);
+                int iconIndex;
+                link.GetPath(targetBuf, targetBuf.Capacity, IntPtr.Zero, 0);
+                link.GetArguments(argsBuf, argsBuf.Capacity);
+                link.GetIconLocation(iconBuf, iconBuf.Capacity, out iconIndex);
+                link.GetDescription(descBuf, descBuf.Capacity);
+                target = targetBuf.ToString();
+                arguments = argsBuf.ToString();
+                icon = iconBuf.ToString() + "," + iconIndex;
+                description = descBuf.ToString();
+                return true;
+            }
+            catch (Exception) { return false; }
+            finally { Marshal.FinalReleaseComObject(com); }
+        }
+        private static bool Matches(string path, string arguments)
+        {
+            string target, actualArgs, icon, actualDesc;
+            if (!TryReadShortcut(path, out target, out actualArgs, out icon, out actualDesc)) return false;
+            return (String.Equals(target, Application.ExecutablePath, StringComparison.OrdinalIgnoreCase) ||
+                String.Equals(Path.GetFileName(target), "FolderSeal.exe", StringComparison.OrdinalIgnoreCase)) &&
+                actualArgs == arguments && actualDesc == Description;
         }
         [DllImport("shell32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
         private static extern void SHChangeNotify(uint eventId, uint flags, string item1, IntPtr item2);
         private static void NotifyShell(uint eventId, string path) { SHChangeNotify(eventId, 0x0005, path, IntPtr.Zero); }
-        private static void Set(object target, string property, object value)
-        {
-            target.GetType().InvokeMember(property, System.Reflection.BindingFlags.SetProperty, null, target, new object[] { value });
-        }
     }
 
     internal sealed class VaultLibraryForm : Form

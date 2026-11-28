@@ -15,13 +15,9 @@ class EntryTests {
  using(var v=new VaultSession(root,Path.Combine(test,"sessions"),false)){v.Create("12345678");File.WriteAllText(Path.Combine(v.Work,"sample.txt"),"fixture");v.Lock();}
  byte[] hash=Paths.Hash(Path.Combine(root,VaultSession.DataName));
  string entry=Task.Run(delegate { return FolderEntry.Create(root,false); }).GetAwaiter().GetResult();
- object shell=Activator.CreateInstance(Type.GetTypeFromProgID("WScript.Shell"));
- object link=shell.GetType().InvokeMember("CreateShortcut",BindingFlags.InvokeMethod,null,shell,new object[]{entry});
- string target=(string)link.GetType().InvokeMember("TargetPath",BindingFlags.GetProperty,null,link,null);
- string arguments=(string)link.GetType().InvokeMember("Arguments",BindingFlags.GetProperty,null,link,null);
- string icon=(string)link.GetType().InvokeMember("IconLocation",BindingFlags.GetProperty,null,link,null);
- if(target!=Application.ExecutablePath || arguments!="--open-vault \""+root+"\"" || icon!=Application.ExecutablePath+",0") throw new Exception("Shortcut routing or brand icon incorrect: " + icon);
- Marshal.FinalReleaseComObject(link); Marshal.FinalReleaseComObject(shell);
+ string target, arguments, icon, description;
+ if(!FolderEntry.TryReadShortcut(entry, out target, out arguments, out icon, out description)) throw new Exception("Failed to read created Unicode shortcut");
+ if(!String.Equals(target, Application.ExecutablePath, StringComparison.OrdinalIgnoreCase) || arguments!="--open-vault \""+root+"\"" || !String.Equals(icon, Application.ExecutablePath+",0", StringComparison.OrdinalIgnoreCase)) throw new Exception("Shortcut routing or brand icon incorrect: " + icon);
  FileAttributes hidden = FileAttributes.Hidden | FileAttributes.System;
  if((File.GetAttributes(root)&hidden)!=hidden || !Paths.Equal(hash,Paths.Hash(Path.Combine(root,VaultSession.DataName))))throw new Exception("Data or hidden state incorrect");
  using (var v = new VaultSession(root, Path.Combine(test, "sessions"), false))
