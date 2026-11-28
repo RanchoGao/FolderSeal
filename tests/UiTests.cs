@@ -256,6 +256,9 @@ internal static class UiTests
                 search.Text = "no-generated-match"; Check(list.Items.Count == 0 && ((Label)Get(library, "info")).Text.Contains("未找到匹配项"), "no search match has a distinct message");
                 search.Text = ""; library.Size = library.MinimumSize; Render(library, output, "library-minimum");
                 Check(list.Height > 100 && openByPath.Parent.Controls.OfType<Button>().All(button => button.Right <= openByPath.Parent.ClientSize.Width && button.Bottom <= openByPath.Parent.ClientSize.Height), "library minimum size retains list and all actions");
+                Button openButton = (Button)Get(library, "open"); Button pathButton = (Button)Get(library, "path");
+                Control actionRow = openButton.Parent; Control footerLayout = actionRow.Parent; Control footerPanel = footerLayout.Parent;
+                Check(openButton.Bottom <= actionRow.ClientSize.Height && pathButton.Bottom <= actionRow.ClientSize.Height && actionRow.Bottom <= footerLayout.ClientSize.Height && footerLayout.Bottom <= footerPanel.ClientSize.Height - footerPanel.Padding.Bottom, "library footer buttons fit without vertical clipping");
                 Check(list.Columns.Cast<ColumnHeader>().Sum(x => x.Width) <= list.ClientSize.Width, "all library status columns fit minimum width");
             }
             using (VaultLibraryForm library = new VaultLibraryForm(catalog, "UI-Test-Only-927!"))
@@ -291,7 +294,7 @@ internal static class UiTests
                 Check(dialog.ShowDialog() == DialogResult.OK && dialog.SelectedRoot == unrecorded, "quoted Unicode paths can open a folder without a catalog entry");
             }
             using (NameDialog name = new NameDialog())
-                Check(name.CancelButton != null && ((Button)name.CancelButton).DialogResult == DialogResult.Cancel, "name dialog offers explicit keyboard cancellation");
+            { Render(name, output, "name-dialog"); Check(name.CancelButton != null && ((Button)name.CancelButton).DialogResult == DialogResult.Cancel, "name dialog offers explicit keyboard cancellation"); Button cancelBtn = (Button)name.CancelButton; Check(cancelBtn.Bottom <= cancelBtn.Parent.ClientSize.Height, "name dialog footer buttons fit without vertical clipping"); }
             Check(!PasswordDialog.HasMinimumLength(new string('a', 7)) && PasswordDialog.HasMinimumLength(new string('a', 8)), "first password setup requires 8 characters");
             Check(!PasswordDialog.HasMinimumLength(String.Concat(Enumerable.Repeat("🔒", 7))) && PasswordDialog.HasMinimumLength(String.Concat(Enumerable.Repeat("🔒", 8))), "surrogate pairs count as one password character");
             using (PasswordDialog deletePassword = new PasswordDialog(false, "删除前再次验证密码", requestFixture(fixture)))

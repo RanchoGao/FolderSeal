@@ -3048,14 +3048,14 @@ namespace FolderSeal
             TableLayoutPanel root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Margin = Padding.Empty };
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 56));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 60));
             TableLayoutPanel body = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(22, 18, 22, 10), ColumnCount = 1, RowCount = 2 };
             body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             body.Controls.Add(new Label { Text = "请输入新的加密文件夹名称", AutoSize = true, Font = new Font("Microsoft YaHei UI", 9.5f, FontStyle.Bold), Margin = new Padding(0, 0, 0, 8) }, 0, 0);
             input.Text = "新建加密文件夹"; input.Dock = DockStyle.Top; input.AccessibleName = "加密文件夹名称";
             body.Controls.Add(input, 0, 1);
-            Panel footer = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.Surface, Padding = new Padding(22, 10, 22, 10) };
-            FlowLayoutPanel buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, WrapContents = false };
+            Panel footer = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.Surface, Padding = new Padding(22, 12, 22, 12), Margin = Padding.Empty };
+            FlowLayoutPanel buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, WrapContents = false, Margin = Padding.Empty };
             ActionButton ok = UiTheme.CreateButton("创建", null, ButtonTone.Primary, 92, 34);
             ActionButton cancel = UiTheme.CreateButton("取消", null, ButtonTone.Secondary, 84, 34); cancel.DialogResult = DialogResult.Cancel;
             ok.Click += delegate
@@ -4094,7 +4094,7 @@ namespace FolderSeal
             TableLayoutPanel root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Margin = Padding.Empty };
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 60));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 62));
 
             TableLayoutPanel body = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(20, 16, 20, 12), ColumnCount = 1, RowCount = 3 };
             body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -4160,12 +4160,13 @@ namespace FolderSeal
             tableFrame.Controls.Add(tableInner);
             body.Controls.Add(tableFrame, 0, 2);
 
-            Panel footer = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.Surface, Padding = new Padding(20, 11, 20, 11) };
+            Panel footer = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.Surface, Padding = new Padding(20, 12, 20, 12), Margin = Padding.Empty };
             footer.Paint += delegate(object s, PaintEventArgs e) { using (Pen pen = new Pen(UiTheme.LineSoft)) e.Graphics.DrawLine(pen, 0, 0, footer.Width, 0); };
             TableLayoutPanel footerLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty };
             footerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             footerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            FlowLayoutPanel actionRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.RightToLeft, WrapContents = false, Margin = Padding.Empty };
+            footerLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            FlowLayoutPanel actionRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.RightToLeft, WrapContents = false, Margin = Padding.Empty, Anchor = AnchorStyles.Right };
             open = UiTheme.CreateButton("打开所选文件夹", delegate { SelectRoot(); }, ButtonTone.Primary, 138, 36); open.Enabled = false; open.Margin = Padding.Empty;
             path = UiTheme.CreateButton("复制路径", null, ButtonTone.Secondary, 96, 36); path.Enabled = false; path.Margin = new Padding(0, 0, 8, 0);
             actionRow.Controls.Add(open); actionRow.Controls.Add(path);
@@ -5195,9 +5196,9 @@ namespace FolderSeal
 
             split.Controls.Add(nav, 0, 0); split.Controls.Add(contentPad, 1, 0);
 
-            Panel footer = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.Surface, Padding = new Padding(20, 11, 20, 11) };
+            Panel footer = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.Surface, Padding = new Padding(20, 12, 20, 12), Margin = Padding.Empty };
             footer.Paint += delegate(object s, PaintEventArgs e) { using (Pen pen = new Pen(UiTheme.LineSoft)) e.Graphics.DrawLine(pen, 0, 0, footer.Width, 0); };
-            FlowLayoutPanel buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, WrapContents = false };
+            FlowLayoutPanel buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, WrapContents = false, Margin = Padding.Empty };
             ActionButton close = UiTheme.CreateButton("返回", delegate { help.Close(); }, ButtonTone.Primary, 92, 34); close.DialogResult = DialogResult.Cancel;
             buttons.Controls.Add(close); footer.Controls.Add(buttons);
 
@@ -6069,7 +6070,7 @@ namespace FolderSeal
                 TableLayoutPanel root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Margin = Padding.Empty };
                 root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
                 root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-                root.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
+                root.RowStyles.Add(new RowStyle(SizeType.Absolute, 60));
 
                 TableLayoutPanel layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(20, 16, 20, 10), RowCount = 4, ColumnCount = 1 };
                 layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -6111,9 +6112,9 @@ namespace FolderSeal
                 };
                 list.DoubleClick += delegate { if (recoverButton.Enabled) dialog.DialogResult = DialogResult.OK; };
 
-                Panel footer = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.Surface, Padding = new Padding(20, 11, 20, 11) };
+                Panel footer = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.Surface, Padding = new Padding(20, 12, 20, 12), Margin = Padding.Empty };
                 footer.Paint += delegate(object s, PaintEventArgs e) { using (Pen p = new Pen(UiTheme.LineSoft)) e.Graphics.DrawLine(p, 0, 0, footer.Width, 0); };
-                FlowLayoutPanel buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, WrapContents = false };
+                FlowLayoutPanel buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, WrapContents = false, Margin = Padding.Empty };
                 buttons.Controls.AddRange(new Control[] { recoverButton, cancelButton });
                 footer.Controls.Add(buttons);
 
